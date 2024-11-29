@@ -1,0 +1,5014 @@
+commit 3a625af272ee8c6f878ba4d44ed1c741a1582395
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Wed Aug 3 21:07:02 2005 +0000
+
+    * add C examples
+    * change doxygen to output stuff in "doxygen/" instead of "doxygen-doc/"
+    * implement avahi_entry_group_{reset,is_empty}() and make everyone use it
+    * move holdoff (SLEEPING) time checking from server to entry group
+    * add preliminary error codes
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@216 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/Makefile.am b/examples/Makefile.am
+new file mode 100644
+index 0000000..e7be1bf
+--- /dev/null
++++ b/examples/Makefile.am
+@@ -0,0 +1,36 @@
++# $Id$
++#
++# This file is part of avahi.
++# 
++# avahi is free software; you can redistribute it and/or modify it
++# under the terms of the GNU Lesser General Public License as
++# published by the Free Software Foundation; either version 2 of the
++# License, or (at your option) any later version.
++#
++# avahi is distributed in the hope that it will be useful, but WITHOUT
++# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++# or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public
++# License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public
++# License along with avahi; if not, write to the Free Software
++# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
++# USA.
++
++AM_CFLAGS=-I$(top_srcdir)
++
++# GLIB 2.0
++AM_CFLAGS+=$(GLIB20_CFLAGS)
++AM_LDADD=$(GLIB20_LIBS)
++
++noinst_PROGRAMS = \
++	publish-service \
++	browse-services
++
++publish_service_SOURCES = publish-service.c
++publish_service_CFLAGS = $(AM_CFLAGS)
++publish_service_LDADD = $(AM_LDADD) ../avahi-core/libavahi-core.la ../avahi-common/libavahi-common.la
++
++browse_services_SOURCES = browse-services.c
++browse_services_CFLAGS = $(AM_CFLAGS)
++browse_services_LDADD = $(AM_LDADD) ../avahi-core/libavahi-core.la ../avahi-common/libavahi-common.la
+diff --git a/examples/browse-services.c b/examples/browse-services.c
+new file mode 100644
+index 0000000..bb8eed8
+--- /dev/null
++++ b/examples/browse-services.c
+@@ -0,0 +1,112 @@
++/* $Id$ */
++
++/***
++  This file is part of avahi.
++ 
++  avahi is free software; you can redistribute it and/or modify it
++  under the terms of the GNU Lesser General Public License as
++  published by the Free Software Foundation; either version 2.1 of the
++  License, or (at your option) any later version.
++ 
++  avahi is distributed in the hope that it will be useful, but WITHOUT
++  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++  or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General
++  Public License for more details.
++ 
++  You should have received a copy of the GNU Lesser General Public
++  License along with avahi; if not, write to the Free Software
++  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
++  USA.
++***/
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#include <avahi-core/core.h>
++
++static GMainLoop *main_loop = NULL;
++
++static void resolve_callback(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiProtocol protocol, AvahiResolverEvent event, const gchar *name,const gchar *type,const gchar *domain, const gchar *host_name, const AvahiAddress *address, guint16 port, AvahiStringList *txt, gpointer userdata) {
++    g_assert(r);
++
++    /* Called whenever a service has been resolved successfully or timed out */
++
++    if (event == AVAHI_RESOLVER_TIMEOUT)
++        g_message("Failed to resolve service '%s' of type '%s' in domain '%s'.", name, type, domain);
++    else {
++        gchar a[128], *t;
++
++        g_assert(event == AVAHI_RESOLVER_FOUND);
++        
++        g_message("Service '%s' of type '%s' in domain '%s':", name, type, domain);
++
++        avahi_address_snprint(a, sizeof(a), address);
++        t = avahi_string_list_to_string(txt);
++        g_message("\t%s:%u (%s) TXT=%s", host_name, port, a, t);
++        g_free(t);
++    }
++
++    avahi_service_resolver_free(r);
++}
++
++static void browse_callback(AvahiServiceBrowser *b, AvahiIfIndex interface, AvahiProtocol protocol, AvahiBrowserEvent event, const gchar *name, const gchar *type, const gchar *domain, gpointer userdata) {
++    g_assert(b);
++    
++    AvahiServer *s = userdata;
++
++    /* Called whenever a new services becomes available on the LAN or is removed from the LAN */
++
++    g_message("%s: service '%s' of type '%s' in domain '%s'",
++              event == AVAHI_BROWSER_NEW ? "NEW" : "REMOVED",
++              name,
++              type,
++              domain);
++
++    /* If it's new, let's resolve it */
++    if (event == AVAHI_BROWSER_NEW)
++        
++        /* We ignore the returned resolver object. In the callback function
++        we free it. If the server is terminated before the callback
++        function is called the server will free the resolver for us. */
++
++        avahi_service_resolver_new(s, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, resolve_callback, s);
++}
++
++int main(int argc, char*argv[]) {
++    AvahiServerConfig config;
++    AvahiServer *server = NULL;
++    AvahiServiceBrowser *sb;
++
++    /* Do not publish any local records */
++    avahi_server_config_init(&config);
++    config.publish_hinfo = FALSE;
++    config.publish_addresses = FALSE;
++    config.publish_workstation = FALSE;
++    config.publish_domain = FALSE;
++    
++    /* Allocate a new server */
++    server = avahi_server_new(NULL, &config, NULL, NULL);
++
++    /* Free the configuration data */
++    avahi_server_config_free(&config);
++
++    /* Create the service browser */
++    sb = avahi_service_browser_new(server, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, browse_callback, server);
++    
++    /* Run the main loop */
++    main_loop = g_main_loop_new(NULL, FALSE);
++    g_main_loop_run(main_loop);
++
++    /* Cleanup things */
++    if (sb)
++        avahi_service_browser_free(sb);
++    
++    if (server)
++        avahi_server_free(server);
++
++    if (main_loop)
++        g_main_loop_unref(main_loop);
++
++    return 0;
++}
+diff --git a/examples/publish-service.c b/examples/publish-service.c
+new file mode 100644
+index 0000000..c9d0141
+--- /dev/null
++++ b/examples/publish-service.c
+@@ -0,0 +1,156 @@
++/* $Id$ */
++
++/***
++  This file is part of avahi.
++ 
++  avahi is free software; you can redistribute it and/or modify it
++  under the terms of the GNU Lesser General Public License as
++  published by the Free Software Foundation; either version 2.1 of the
++  License, or (at your option) any later version.
++ 
++  avahi is distributed in the hope that it will be useful, but WITHOUT
++  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++  or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General
++  Public License for more details.
++ 
++  You should have received a copy of the GNU Lesser General Public
++  License along with avahi; if not, write to the Free Software
++  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
++  USA.
++***/
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#include <time.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#include <avahi-core/core.h>
++
++static AvahiEntryGroup *group = NULL;
++static GMainLoop *main_loop = NULL;
++static gchar *name = NULL;
++
++static void create_services(AvahiServer *s);
++
++static void entry_group_callback(AvahiServer *s, AvahiEntryGroup *g, AvahiEntryGroupState state, gpointer userdata) {
++    g_assert(s);
++    g_assert(g == group);
++
++    /* Called whenever the entry group state changes */
++
++    if (state == AVAHI_ENTRY_GROUP_ESTABLISHED)
++        /* The entry group has been established successfully */
++        g_message("Service '%s' successfully established.", name);
++    
++    else if (state == AVAHI_ENTRY_GROUP_COLLISION) {
++        gchar *n;
++
++        /* A service name collision happened. Let's pick a new name */
++        n = avahi_alternative_service_name(name);
++        g_free(name);
++        name = n;
++
++        g_message("Service name collision, renaming service to '%s'", name);
++
++        /* And recreate the services */
++        create_services(s);
++    }
++}
++
++static void create_services(AvahiServer *s) {
++    gchar r[128];
++    g_assert(s);
++
++    /* If this is the first time we're called, let's create a new entry group */
++    if (!group)
++        group = avahi_entry_group_new(s, entry_group_callback, NULL);
++
++    g_message("Adding service '%s'", name);
++
++    /* Create some random TXT data */
++    snprintf(r, sizeof(r), "random=%i", rand());
++
++    /* Add the service for IPP */
++    if (avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL) < 0) {
++        g_message("Failed to add _ipp._tcp service.");
++        g_main_loop_quit(main_loop);
++        return;
++    }
++
++    /* Add the same service for BSD LPR */
++    if (avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_printer._tcp", NULL, NULL, 515, NULL) < 0) {
++        g_message("Failed to add _printer._tcp service.");
++        g_main_loop_quit(main_loop);
++        return;
++    }
++
++    /* Tell the server to register the service */
++    avahi_entry_group_commit(group);
++}
++
++static void server_callback(AvahiServer *s, AvahiServerState state, gpointer userdata) {
++    g_assert(s);
++
++    /* Called whenever the server state changes */
++
++    if (state == AVAHI_SERVER_RUNNING)
++        /* The serve has startup successfully and registered its host
++         * name on the network, so it's time to create our services */
++        create_services(s);
++    
++    else if (state == AVAHI_SERVER_COLLISION) {
++        gchar *n;
++        
++        /* A host name collision happened. Let's pick a new name for the server */
++        n = avahi_alternative_host_name(avahi_server_get_host_name(s));
++        g_message("Host name collision, retrying with '%s'", n);
++        avahi_server_set_host_name(s, n);
++        g_free(n);
++
++        /* Let's drop our registered services. When the server is back
++         * in AVAHI_SERVER_RUNNING state we will register them
++         * again with the new host name. */
++        if (group)
++            avahi_entry_group_reset(group);
++    }
++}
++
++int main(int argc, char*argv[]) {
++    AvahiServerConfig config;
++    AvahiServer *server = NULL;
++
++    srand(time(NULL));
++    
++    name = g_strdup("MegaPrinter");
++
++    /* Let's set the host name for this server. */
++    avahi_server_config_init(&config);
++    config.host_name = g_strdup("gurkiman");
++    
++    /* Allocate a new server */
++    server = avahi_server_new(NULL, &config, server_callback, NULL);
++
++    /* Free the configuration data */
++    avahi_server_config_free(&config);
++    
++    /* Run the main loop */
++    main_loop = g_main_loop_new(NULL, FALSE);
++    g_main_loop_run(main_loop);
++
++    /* Cleanup things */
++    if (group)
++        avahi_entry_group_free(group);
++
++    if (server)
++        avahi_server_free(server);
++
++    if (main_loop)
++        g_main_loop_unref(main_loop);
++
++    g_free(name);
++    
++    return 0;
++}
+
+commit 8c585e0162e7d773a18ef179e7e8561c2aa71e17
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Thu Aug 4 12:35:11 2005 +0000
+
+    don't register workstation service in example
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@226 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/publish-service.c b/examples/publish-service.c
+index c9d0141..7c9879c 100644
+--- a/examples/publish-service.c
++++ b/examples/publish-service.c
+@@ -129,6 +129,7 @@ int main(int argc, char*argv[]) {
+     /* Let's set the host name for this server. */
+     avahi_server_config_init(&config);
+     config.host_name = g_strdup("gurkiman");
++    config.publish_workstation = FALSE;
+     
+     /* Allocate a new server */
+     server = avahi_server_new(NULL, &config, server_callback, NULL);
+
+commit 0632e854728e8e64552ae08f90852d4a2658539e
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Fri Aug 5 18:59:21 2005 +0000
+
+    * add proper error codes and patch everything to make use of it
+    * parameter validity checkin in all user visible functions of libavahi-core
+    * two new python tools/examples avahi-resolve-host-name and avahi-resolve-address
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@238 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/browse-services.c b/examples/browse-services.c
+index bb8eed8..c58d230 100644
+--- a/examples/browse-services.c
++++ b/examples/browse-services.c
+@@ -77,6 +77,8 @@ int main(int argc, char*argv[]) {
+     AvahiServerConfig config;
+     AvahiServer *server = NULL;
+     AvahiServiceBrowser *sb;
++    gint error;
++    int ret = 1;
+ 
+     /* Do not publish any local records */
+     avahi_server_config_init(&config);
+@@ -86,11 +88,17 @@ int main(int argc, char*argv[]) {
+     config.publish_domain = FALSE;
+     
+     /* Allocate a new server */
+-    server = avahi_server_new(NULL, &config, NULL, NULL);
++    server = avahi_server_new(NULL, &config, NULL, NULL, &error);
+ 
+     /* Free the configuration data */
+     avahi_server_config_free(&config);
+ 
++    /* Check wether creating the server object succeeded */
++    if (!server) {
++        g_message("Failed to create server: %s", avahi_strerror(error));
++        goto fail;
++    }
++    
+     /* Create the service browser */
+     sb = avahi_service_browser_new(server, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, browse_callback, server);
+     
+@@ -98,6 +106,10 @@ int main(int argc, char*argv[]) {
+     main_loop = g_main_loop_new(NULL, FALSE);
+     g_main_loop_run(main_loop);
+ 
++    ret = 0;
++    
++fail:
++    
+     /* Cleanup things */
+     if (sb)
+         avahi_service_browser_free(sb);
+@@ -108,5 +120,5 @@ int main(int argc, char*argv[]) {
+     if (main_loop)
+         g_main_loop_unref(main_loop);
+ 
+-    return 0;
++    return ret;
+ }
+diff --git a/examples/publish-service.c b/examples/publish-service.c
+index 7c9879c..a936147 100644
+--- a/examples/publish-service.c
++++ b/examples/publish-service.c
+@@ -121,7 +121,9 @@ static void server_callback(AvahiServer *s, AvahiServerState state, gpointer use
+ int main(int argc, char*argv[]) {
+     AvahiServerConfig config;
+     AvahiServer *server = NULL;
+-
++    gint error;
++    int ret = 1;
++    
+     srand(time(NULL));
+     
+     name = g_strdup("MegaPrinter");
+@@ -132,15 +134,25 @@ int main(int argc, char*argv[]) {
+     config.publish_workstation = FALSE;
+     
+     /* Allocate a new server */
+-    server = avahi_server_new(NULL, &config, server_callback, NULL);
++    server = avahi_server_new(NULL, &config, server_callback, NULL, &error);
+ 
+     /* Free the configuration data */
+     avahi_server_config_free(&config);
++
++    /* Check wether creating the server object succeeded */
++    if (!server) {
++        g_message("Failed to create server: %s", avahi_strerror(error));
++        goto fail;
++    }
+     
+     /* Run the main loop */
+     main_loop = g_main_loop_new(NULL, FALSE);
+     g_main_loop_run(main_loop);
+ 
++    ret = 0;
++    
++fail:
++    
+     /* Cleanup things */
+     if (group)
+         avahi_entry_group_free(group);
+@@ -153,5 +165,5 @@ int main(int argc, char*argv[]) {
+ 
+     g_free(name);
+     
+-    return 0;
++    return ret;
+ }
+
+commit c011557b07abda8145d7a711095acdd4284fe367
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Fri Aug 5 19:41:30 2005 +0000
+
+    Improve examples to do error checking
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@240 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/browse-services.c b/examples/browse-services.c
+index c58d230..f2707fd 100644
+--- a/examples/browse-services.c
++++ b/examples/browse-services.c
+@@ -70,7 +70,8 @@ static void browse_callback(AvahiServiceBrowser *b, AvahiIfIndex interface, Avah
+         we free it. If the server is terminated before the callback
+         function is called the server will free the resolver for us. */
+ 
+-        avahi_service_resolver_new(s, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, resolve_callback, s);
++        if (!(avahi_service_resolver_new(s, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, resolve_callback, s)))
++            g_message("Failed to resolve service '%s': %s", name, avahi_strerror(avahi_server_errno(s)));
+ }
+ 
+ int main(int argc, char*argv[]) {
+@@ -100,7 +101,10 @@ int main(int argc, char*argv[]) {
+     }
+     
+     /* Create the service browser */
+-    sb = avahi_service_browser_new(server, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, browse_callback, server);
++    if (!(sb = avahi_service_browser_new(server, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, browse_callback, server))) {
++        g_message("Failed to create service browser: %s", avahi_strerror(avahi_server_errno(server)));
++        goto fail;
++    }
+     
+     /* Run the main loop */
+     main_loop = g_main_loop_new(NULL, FALSE);
+diff --git a/examples/publish-service.c b/examples/publish-service.c
+index a936147..37ecc02 100644
+--- a/examples/publish-service.c
++++ b/examples/publish-service.c
+@@ -62,33 +62,45 @@ static void entry_group_callback(AvahiServer *s, AvahiEntryGroup *g, AvahiEntryG
+ 
+ static void create_services(AvahiServer *s) {
+     gchar r[128];
++    gint ret;
+     g_assert(s);
+ 
+     /* If this is the first time we're called, let's create a new entry group */
+-    if (!group)
+-        group = avahi_entry_group_new(s, entry_group_callback, NULL);
+-
++    if (!group) {
++        if (!(group = avahi_entry_group_new(s, entry_group_callback, NULL))) {
++            g_message("avahi_entry_group_new() failed: %s", avahi_strerror(avahi_server_errno(s)));
++            goto fail;
++        }
++    }
++    
+     g_message("Adding service '%s'", name);
+ 
+     /* Create some random TXT data */
+     snprintf(r, sizeof(r), "random=%i", rand());
+ 
+     /* Add the service for IPP */
+-    if (avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL) < 0) {
+-        g_message("Failed to add _ipp._tcp service.");
+-        g_main_loop_quit(main_loop);
+-        return;
++    if ((ret = avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL)) < 0) {
++        g_message("Failed to add _ipp._tcp service: %s", avahi_strerror(ret));
++        goto fail;
+     }
+ 
+     /* Add the same service for BSD LPR */
+-    if (avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_printer._tcp", NULL, NULL, 515, NULL) < 0) {
+-        g_message("Failed to add _printer._tcp service.");
+-        g_main_loop_quit(main_loop);
+-        return;
++    if ((ret = avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_printer._tcp", NULL, NULL, 515, NULL)) < 0) {
++        g_message("Failed to add _printer._tcp service: %s", avahi_strerror(ret));
++        goto fail;
+     }
+ 
+     /* Tell the server to register the service */
+-    avahi_entry_group_commit(group);
++    if ((ret = avahi_entry_group_commit(group)) < 0) {
++        g_message("Failed to commit entry_group: %s", avahi_strerror(ret));
++        goto fail;
++    }
++
++    return;
++
++fail:
++    g_main_loop_quit(main_loop);
++    return;
+ }
+ 
+ static void server_callback(AvahiServer *s, AvahiServerState state, gpointer userdata) {
+@@ -103,13 +115,21 @@ static void server_callback(AvahiServer *s, AvahiServerState state, gpointer use
+     
+     else if (state == AVAHI_SERVER_COLLISION) {
+         gchar *n;
++        gint r;
+         
+         /* A host name collision happened. Let's pick a new name for the server */
+         n = avahi_alternative_host_name(avahi_server_get_host_name(s));
+         g_message("Host name collision, retrying with '%s'", n);
+-        avahi_server_set_host_name(s, n);
++        r = avahi_server_set_host_name(s, n);
+         g_free(n);
+ 
++        if (r < 0) {
++            g_message("Failed to set new host name: %s", avahi_strerror(r));
++
++            g_main_loop_quit(main_loop);
++            return;
++        }
++
+         /* Let's drop our registered services. When the server is back
+          * in AVAHI_SERVER_RUNNING state we will register them
+          * again with the new host name. */
+
+commit 4f0a5e7572a4257894b4bfede42c26d65152609e
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sat Aug 13 21:25:09 2005 +0000
+
+    * strip glib from avahi-core
+    * implement glib memory allocator
+    * add new documentation file MALLOC
+    * initialize pseudo-RNG from /dev/urandom in avahi-daemon
+    * remove some gcc 4.0 warnings
+    * beef up watch system with real timeouts
+    * move GCC __attribute__ macros into its own header avahi-common/gccmacro.h
+    * make use of GCC's sentinel attribute where it make sense
+    * add malloc() implementations that abort on OOM and enable them by default
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@308 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/browse-services.c b/examples/browse-services.c
+index f2707fd..472b053 100644
+--- a/examples/browse-services.c
++++ b/examples/browse-services.c
+@@ -23,46 +23,74 @@
+ #include <config.h>
+ #endif
+ 
+-#include <avahi-core/core.h>
+-
+-static GMainLoop *main_loop = NULL;
++#include <stdio.h>
++#include <assert.h>
++#include <stdlib.h>
++#include <time.h>
+ 
+-static void resolve_callback(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiProtocol protocol, AvahiResolverEvent event, const gchar *name,const gchar *type,const gchar *domain, const gchar *host_name, const AvahiAddress *address, guint16 port, AvahiStringList *txt, gpointer userdata) {
+-    g_assert(r);
++#include <avahi-core/core.h>
++#include <avahi-common/simple-watch.h>
++#include <avahi-common/malloc.h>
++
++static AvahiSimplePoll *simple_poll = NULL;
++
++static void resolve_callback(
++    AvahiServiceResolver *r,
++    AvahiIfIndex interface,
++    AvahiProtocol protocol,
++    AvahiResolverEvent event,
++    const char *name,
++    const char *type,
++    const char *domain,
++    const char *host_name,
++    const AvahiAddress *address,
++    uint16_t port,
++    AvahiStringList *txt,
++    void* userdata) {
++    
++    assert(r);
+ 
+     /* Called whenever a service has been resolved successfully or timed out */
+ 
+     if (event == AVAHI_RESOLVER_TIMEOUT)
+-        g_message("Failed to resolve service '%s' of type '%s' in domain '%s'.", name, type, domain);
++        fprintf(stderr, "Failed to resolve service '%s' of type '%s' in domain '%s'.\n", name, type, domain);
+     else {
+-        gchar a[128], *t;
++        char a[128], *t;
+ 
+-        g_assert(event == AVAHI_RESOLVER_FOUND);
++        assert(event == AVAHI_RESOLVER_FOUND);
+         
+-        g_message("Service '%s' of type '%s' in domain '%s':", name, type, domain);
++        fprintf(stderr, "Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
+ 
+         avahi_address_snprint(a, sizeof(a), address);
+         t = avahi_string_list_to_string(txt);
+-        g_message("\t%s:%u (%s) TXT=%s", host_name, port, a, t);
+-        g_free(t);
++        fprintf(stderr, "\t%s:%u (%s) TXT=%s\n", host_name, port, a, t);
++        avahi_free(t);
+     }
+ 
+     avahi_service_resolver_free(r);
+ }
+ 
+-static void browse_callback(AvahiServiceBrowser *b, AvahiIfIndex interface, AvahiProtocol protocol, AvahiBrowserEvent event, const gchar *name, const gchar *type, const gchar *domain, gpointer userdata) {
+-    g_assert(b);
++static void browse_callback(
++    AvahiServiceBrowser *b,
++    AvahiIfIndex interface,
++    AvahiProtocol protocol,
++    AvahiBrowserEvent event,
++    const char *name,
++    const char *type,
++    const char *domain,
++    void* userdata) {
+     
+     AvahiServer *s = userdata;
++    assert(b);
+ 
+     /* Called whenever a new services becomes available on the LAN or is removed from the LAN */
+ 
+-    g_message("%s: service '%s' of type '%s' in domain '%s'",
+-              event == AVAHI_BROWSER_NEW ? "NEW" : "REMOVED",
+-              name,
+-              type,
+-              domain);
+-
++    fprintf(stderr, "%s: service '%s' of type '%s' in domain '%s'\n",
++            event == AVAHI_BROWSER_NEW ? "NEW" : "REMOVED",
++            name,
++            type,
++            domain);
++    
+     /* If it's new, let's resolve it */
+     if (event == AVAHI_BROWSER_NEW)
+         
+@@ -71,45 +99,55 @@ static void browse_callback(AvahiServiceBrowser *b, AvahiIfIndex interface, Avah
+         function is called the server will free the resolver for us. */
+ 
+         if (!(avahi_service_resolver_new(s, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, resolve_callback, s)))
+-            g_message("Failed to resolve service '%s': %s", name, avahi_strerror(avahi_server_errno(s)));
++            fprintf(stderr, "Failed to resolve service '%s': %s\n", name, avahi_strerror(avahi_server_errno(s)));
+ }
+ 
+ int main(int argc, char*argv[]) {
+     AvahiServerConfig config;
+     AvahiServer *server = NULL;
+     AvahiServiceBrowser *sb;
+-    gint error;
++    int error;
+     int ret = 1;
+ 
++    /* Initialize the psuedo-RNG */
++    srand(time(NULL));
++
++    /* Allocate main loop object */
++    if (!(simple_poll = avahi_simple_poll_new())) {
++        fprintf(stderr, "Failed to create simple poll object.\n");
++        goto fail;
++    }
++
+     /* Do not publish any local records */
+     avahi_server_config_init(&config);
+-    config.publish_hinfo = FALSE;
+-    config.publish_addresses = FALSE;
+-    config.publish_workstation = FALSE;
+-    config.publish_domain = FALSE;
++    config.publish_hinfo = 0;
++    config.publish_addresses = 0;
++    config.publish_workstation = 0;
++    config.publish_domain = 0;
+     
+     /* Allocate a new server */
+-    server = avahi_server_new(NULL, &config, NULL, NULL, &error);
++    server = avahi_server_new(avahi_simple_poll_get(simple_poll), &config, NULL, NULL, &error);
+ 
+     /* Free the configuration data */
+     avahi_server_config_free(&config);
+ 
+     /* Check wether creating the server object succeeded */
+     if (!server) {
+-        g_message("Failed to create server: %s", avahi_strerror(error));
++        fprintf(stderr, "Failed to create server: %s\n", avahi_strerror(error));
+         goto fail;
+     }
+     
+     /* Create the service browser */
+     if (!(sb = avahi_service_browser_new(server, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, browse_callback, server))) {
+-        g_message("Failed to create service browser: %s", avahi_strerror(avahi_server_errno(server)));
++        fprintf(stderr, "Failed to create service browser: %s\n", avahi_strerror(avahi_server_errno(server)));
+         goto fail;
+     }
+     
+     /* Run the main loop */
+-    main_loop = g_main_loop_new(NULL, FALSE);
+-    g_main_loop_run(main_loop);
+-
++    for (;;)
++        if (avahi_simple_poll_iterate(simple_poll, -1) != 0)
++            break;
++    
+     ret = 0;
+     
+ fail:
+@@ -121,8 +159,8 @@ fail:
+     if (server)
+         avahi_server_free(server);
+ 
+-    if (main_loop)
+-        g_main_loop_unref(main_loop);
++    if (simple_poll)
++        avahi_simple_poll_free(simple_poll);
+ 
+     return ret;
+ }
+diff --git a/examples/publish-service.c b/examples/publish-service.c
+index 37ecc02..4a78402 100644
+--- a/examples/publish-service.c
++++ b/examples/publish-service.c
+@@ -26,34 +26,37 @@
+ #include <time.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <assert.h>
+ 
+ #include <avahi-core/core.h>
++#include <avahi-common/simple-watch.h>
++#include <avahi-common/malloc.h>
+ 
+ static AvahiEntryGroup *group = NULL;
+-static GMainLoop *main_loop = NULL;
+-static gchar *name = NULL;
++static AvahiSimplePoll *simple_poll = NULL;
++static char *name = NULL;
+ 
+ static void create_services(AvahiServer *s);
+ 
+-static void entry_group_callback(AvahiServer *s, AvahiEntryGroup *g, AvahiEntryGroupState state, gpointer userdata) {
+-    g_assert(s);
+-    g_assert(g == group);
++static void entry_group_callback(AvahiServer *s, AvahiEntryGroup *g, AvahiEntryGroupState state, void *userdata) {
++    assert(s);
++    assert(g == group);
+ 
+     /* Called whenever the entry group state changes */
+ 
+     if (state == AVAHI_ENTRY_GROUP_ESTABLISHED)
+         /* The entry group has been established successfully */
+-        g_message("Service '%s' successfully established.", name);
++        fprintf(stderr, "Service '%s' successfully established.\n", name);
+     
+     else if (state == AVAHI_ENTRY_GROUP_COLLISION) {
+-        gchar *n;
++        char *n;
+ 
+         /* A service name collision happened. Let's pick a new name */
+         n = avahi_alternative_service_name(name);
+-        g_free(name);
++        avahi_free(name);
+         name = n;
+ 
+-        g_message("Service name collision, renaming service to '%s'", name);
++        fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
+ 
+         /* And recreate the services */
+         create_services(s);
+@@ -61,50 +64,50 @@ static void entry_group_callback(AvahiServer *s, AvahiEntryGroup *g, AvahiEntryG
+ }
+ 
+ static void create_services(AvahiServer *s) {
+-    gchar r[128];
+-    gint ret;
+-    g_assert(s);
++    char r[128];
++    int ret;
++    assert(s);
+ 
+     /* If this is the first time we're called, let's create a new entry group */
+     if (!group) {
+         if (!(group = avahi_entry_group_new(s, entry_group_callback, NULL))) {
+-            g_message("avahi_entry_group_new() failed: %s", avahi_strerror(avahi_server_errno(s)));
++            fprintf(stderr, "avahi_entry_group_new() failed: %s\n", avahi_strerror(avahi_server_errno(s)));
+             goto fail;
+         }
+     }
+     
+-    g_message("Adding service '%s'", name);
++    fprintf(stderr, "Adding service '%s'\n", name);
+ 
+     /* Create some random TXT data */
+     snprintf(r, sizeof(r), "random=%i", rand());
+ 
+     /* Add the service for IPP */
+     if ((ret = avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL)) < 0) {
+-        g_message("Failed to add _ipp._tcp service: %s", avahi_strerror(ret));
++        fprintf(stderr, "Failed to add _ipp._tcp service: %s\n", avahi_strerror(ret));
+         goto fail;
+     }
+ 
+     /* Add the same service for BSD LPR */
+     if ((ret = avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_printer._tcp", NULL, NULL, 515, NULL)) < 0) {
+-        g_message("Failed to add _printer._tcp service: %s", avahi_strerror(ret));
++        fprintf(stderr, "Failed to add _printer._tcp service: %s\n", avahi_strerror(ret));
+         goto fail;
+     }
+ 
+     /* Tell the server to register the service */
+     if ((ret = avahi_entry_group_commit(group)) < 0) {
+-        g_message("Failed to commit entry_group: %s", avahi_strerror(ret));
++        fprintf(stderr, "Failed to commit entry_group: %s\n", avahi_strerror(ret));
+         goto fail;
+     }
+ 
+     return;
+ 
+ fail:
+-    g_main_loop_quit(main_loop);
++    avahi_simple_poll_quit(simple_poll);
+     return;
+ }
+ 
+-static void server_callback(AvahiServer *s, AvahiServerState state, gpointer userdata) {
+-    g_assert(s);
++static void server_callback(AvahiServer *s, AvahiServerState state, void * userdata) {
++    assert(s);
+ 
+     /* Called whenever the server state changes */
+ 
+@@ -114,19 +117,19 @@ static void server_callback(AvahiServer *s, AvahiServerState state, gpointer use
+         create_services(s);
+     
+     else if (state == AVAHI_SERVER_COLLISION) {
+-        gchar *n;
+-        gint r;
++        char *n;
++        int r;
+         
+         /* A host name collision happened. Let's pick a new name for the server */
+         n = avahi_alternative_host_name(avahi_server_get_host_name(s));
+-        g_message("Host name collision, retrying with '%s'", n);
++        fprintf(stderr, "Host name collision, retrying with '%s'\n", n);
+         r = avahi_server_set_host_name(s, n);
+-        g_free(n);
++        avahi_free(n);
+ 
+         if (r < 0) {
+-            g_message("Failed to set new host name: %s", avahi_strerror(r));
++            fprintf(stderr, "Failed to set new host name: %s\n", avahi_strerror(r));
+ 
+-            g_main_loop_quit(main_loop);
++            avahi_simple_poll_quit(simple_poll);
+             return;
+         }
+ 
+@@ -141,34 +144,42 @@ static void server_callback(AvahiServer *s, AvahiServerState state, gpointer use
+ int main(int argc, char*argv[]) {
+     AvahiServerConfig config;
+     AvahiServer *server = NULL;
+-    gint error;
++    int error;
+     int ret = 1;
+     
++    /* Initialize the pseudo-RNG */
+     srand(time(NULL));
++
++    /* Allocate main loop object */
++    if (!(simple_poll = avahi_simple_poll_new())) {
++        fprintf(stderr, "Failed to create simple poll object.\n");
++        goto fail;
++    }
+     
+-    name = g_strdup("MegaPrinter");
++    name = avahi_strdup("MegaPrinter");
+ 
+     /* Let's set the host name for this server. */
+     avahi_server_config_init(&config);
+-    config.host_name = g_strdup("gurkiman");
+-    config.publish_workstation = FALSE;
++    config.host_name = avahi_strdup("gurkiman");
++    config.publish_workstation = 0;
+     
+     /* Allocate a new server */
+-    server = avahi_server_new(NULL, &config, server_callback, NULL, &error);
++    server = avahi_server_new(avahi_simple_poll_get(simple_poll), &config, server_callback, NULL, &error);
+ 
+     /* Free the configuration data */
+     avahi_server_config_free(&config);
+ 
+     /* Check wether creating the server object succeeded */
+     if (!server) {
+-        g_message("Failed to create server: %s", avahi_strerror(error));
++        fprintf(stderr, "Failed to create server: %s", avahi_strerror(error));
+         goto fail;
+     }
+     
+     /* Run the main loop */
+-    main_loop = g_main_loop_new(NULL, FALSE);
+-    g_main_loop_run(main_loop);
+-
++    for (;;)
++        if (avahi_simple_poll_iterate(simple_poll, -1) != 0)
++            break;
++    
+     ret = 0;
+     
+ fail:
+@@ -180,10 +191,10 @@ fail:
+     if (server)
+         avahi_server_free(server);
+ 
+-    if (main_loop)
+-        g_main_loop_unref(main_loop);
++    if (simple_poll)
++        avahi_simple_poll_free(simple_poll);
+ 
+-    g_free(name);
++    avahi_free(name);
+     
+     return ret;
+ }
+
+commit 8b5cd6ffd9137b14b7ed678f10a551e3911e4a40
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sat Aug 13 22:04:21 2005 +0000
+
+    Rename some server side objects/symbols so that they do not conflict with the same things on the client side. i.e. AvahiEntryGroup -> AvahiSEntryGroup
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@310 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/browse-services.c b/examples/browse-services.c
+index 472b053..7227bd7 100644
+--- a/examples/browse-services.c
++++ b/examples/browse-services.c
+@@ -35,7 +35,7 @@
+ static AvahiSimplePoll *simple_poll = NULL;
+ 
+ static void resolve_callback(
+-    AvahiServiceResolver *r,
++    AvahiSServiceResolver *r,
+     AvahiIfIndex interface,
+     AvahiProtocol protocol,
+     AvahiResolverEvent event,
+@@ -67,11 +67,11 @@ static void resolve_callback(
+         avahi_free(t);
+     }
+ 
+-    avahi_service_resolver_free(r);
++    avahi_s_service_resolver_free(r);
+ }
+ 
+ static void browse_callback(
+-    AvahiServiceBrowser *b,
++    AvahiSServiceBrowser *b,
+     AvahiIfIndex interface,
+     AvahiProtocol protocol,
+     AvahiBrowserEvent event,
+@@ -98,14 +98,14 @@ static void browse_callback(
+         we free it. If the server is terminated before the callback
+         function is called the server will free the resolver for us. */
+ 
+-        if (!(avahi_service_resolver_new(s, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, resolve_callback, s)))
++        if (!(avahi_s_service_resolver_new(s, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, resolve_callback, s)))
+             fprintf(stderr, "Failed to resolve service '%s': %s\n", name, avahi_strerror(avahi_server_errno(s)));
+ }
+ 
+ int main(int argc, char*argv[]) {
+     AvahiServerConfig config;
+     AvahiServer *server = NULL;
+-    AvahiServiceBrowser *sb;
++    AvahiSServiceBrowser *sb;
+     int error;
+     int ret = 1;
+ 
+@@ -138,7 +138,7 @@ int main(int argc, char*argv[]) {
+     }
+     
+     /* Create the service browser */
+-    if (!(sb = avahi_service_browser_new(server, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, browse_callback, server))) {
++    if (!(sb = avahi_s_service_browser_new(server, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, browse_callback, server))) {
+         fprintf(stderr, "Failed to create service browser: %s\n", avahi_strerror(avahi_server_errno(server)));
+         goto fail;
+     }
+@@ -154,7 +154,7 @@ fail:
+     
+     /* Cleanup things */
+     if (sb)
+-        avahi_service_browser_free(sb);
++        avahi_s_service_browser_free(sb);
+     
+     if (server)
+         avahi_server_free(server);
+diff --git a/examples/publish-service.c b/examples/publish-service.c
+index 4a78402..6132622 100644
+--- a/examples/publish-service.c
++++ b/examples/publish-service.c
+@@ -32,13 +32,13 @@
+ #include <avahi-common/simple-watch.h>
+ #include <avahi-common/malloc.h>
+ 
+-static AvahiEntryGroup *group = NULL;
++static AvahiSEntryGroup *group = NULL;
+ static AvahiSimplePoll *simple_poll = NULL;
+ static char *name = NULL;
+ 
+ static void create_services(AvahiServer *s);
+ 
+-static void entry_group_callback(AvahiServer *s, AvahiEntryGroup *g, AvahiEntryGroupState state, void *userdata) {
++static void entry_group_callback(AvahiServer *s, AvahiSEntryGroup *g, AvahiEntryGroupState state, void *userdata) {
+     assert(s);
+     assert(g == group);
+ 
+@@ -70,7 +70,7 @@ static void create_services(AvahiServer *s) {
+ 
+     /* If this is the first time we're called, let's create a new entry group */
+     if (!group) {
+-        if (!(group = avahi_entry_group_new(s, entry_group_callback, NULL))) {
++        if (!(group = avahi_s_entry_group_new(s, entry_group_callback, NULL))) {
+             fprintf(stderr, "avahi_entry_group_new() failed: %s\n", avahi_strerror(avahi_server_errno(s)));
+             goto fail;
+         }
+@@ -94,7 +94,7 @@ static void create_services(AvahiServer *s) {
+     }
+ 
+     /* Tell the server to register the service */
+-    if ((ret = avahi_entry_group_commit(group)) < 0) {
++    if ((ret = avahi_s_entry_group_commit(group)) < 0) {
+         fprintf(stderr, "Failed to commit entry_group: %s\n", avahi_strerror(ret));
+         goto fail;
+     }
+@@ -137,7 +137,7 @@ static void server_callback(AvahiServer *s, AvahiServerState state, void * userd
+          * in AVAHI_SERVER_RUNNING state we will register them
+          * again with the new host name. */
+         if (group)
+-            avahi_entry_group_reset(group);
++            avahi_s_entry_group_reset(group);
+     }
+ }
+ 
+@@ -186,7 +186,7 @@ fail:
+     
+     /* Cleanup things */
+     if (group)
+-        avahi_entry_group_free(group);
++        avahi_s_entry_group_free(group);
+ 
+     if (server)
+         avahi_server_free(server);
+
+commit 1b7f07f5451209d2bc01e6aa53ffb79b10253d91
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Mon Aug 15 14:09:50 2005 +0000
+
+    Remove glib dependency from examples
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@330 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/Makefile.am b/examples/Makefile.am
+index e7be1bf..d819103 100644
+--- a/examples/Makefile.am
++++ b/examples/Makefile.am
+@@ -19,10 +19,6 @@
+ 
+ AM_CFLAGS=-I$(top_srcdir)
+ 
+-# GLIB 2.0
+-AM_CFLAGS+=$(GLIB20_CFLAGS)
+-AM_LDADD=$(GLIB20_LIBS)
+-
+ noinst_PROGRAMS = \
+ 	publish-service \
+ 	browse-services
+
+commit 66c497f4637276f390f1a7afaf7fe07616da9f1a
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sat Aug 20 22:57:33 2005 +0000
+
+    * Disable debug output of avahi-client
+    * implement service resolving API in avahi-client
+    * fix some memory corruption bugs in dbus-watch-glue
+    * add avahi-client examples
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@363 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/Makefile.am b/examples/Makefile.am
+index d819103..da233b9 100644
+--- a/examples/Makefile.am
++++ b/examples/Makefile.am
+@@ -20,13 +20,23 @@
+ AM_CFLAGS=-I$(top_srcdir)
+ 
+ noinst_PROGRAMS = \
+-	publish-service \
+-	browse-services
++	core-publish-service \
++	core-browse-services \
++	client-publish-service \
++	client-browse-services
+ 
+-publish_service_SOURCES = publish-service.c
+-publish_service_CFLAGS = $(AM_CFLAGS)
+-publish_service_LDADD = $(AM_LDADD) ../avahi-core/libavahi-core.la ../avahi-common/libavahi-common.la
++core_publish_service_SOURCES = core-publish-service.c
++core_publish_service_CFLAGS = $(AM_CFLAGS)
++core_publish_service_LDADD = $(AM_LDADD) ../avahi-core/libavahi-core.la ../avahi-common/libavahi-common.la
+ 
+-browse_services_SOURCES = browse-services.c
+-browse_services_CFLAGS = $(AM_CFLAGS)
+-browse_services_LDADD = $(AM_LDADD) ../avahi-core/libavahi-core.la ../avahi-common/libavahi-common.la
++core_browse_services_SOURCES = core-browse-services.c
++core_browse_services_CFLAGS = $(AM_CFLAGS)
++core_browse_services_LDADD = $(AM_LDADD) ../avahi-core/libavahi-core.la ../avahi-common/libavahi-common.la
++
++client_publish_service_SOURCES = client-publish-service.c
++client_publish_service_CFLAGS = $(AM_CFLAGS)
++client_publish_service_LDADD = $(AM_LDADD) ../avahi-client/libavahi-client.la ../avahi-common/libavahi-common.la
++
++client_browse_services_SOURCES = client-browse-services.c
++client_browse_services_CFLAGS = $(AM_CFLAGS)
++client_browse_services_LDADD = $(AM_LDADD) ../avahi-client/libavahi-client.la ../avahi-common/libavahi-common.la
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+new file mode 100644
+index 0000000..80fa934
+--- /dev/null
++++ b/examples/client-browse-services.c
+@@ -0,0 +1,164 @@
++/* $Id$ */
++
++/***
++  This file is part of avahi.
++ 
++  avahi is free software; you can redistribute it and/or modify it
++  under the terms of the GNU Lesser General Public License as
++  published by the Free Software Foundation; either version 2.1 of the
++  License, or (at your option) any later version.
++ 
++  avahi is distributed in the hope that it will be useful, but WITHOUT
++  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++  or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General
++  Public License for more details.
++ 
++  You should have received a copy of the GNU Lesser General Public
++  License along with avahi; if not, write to the Free Software
++  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
++  USA.
++***/
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#include <stdio.h>
++#include <assert.h>
++#include <stdlib.h>
++#include <time.h>
++
++#include <avahi-client/client.h>
++#include <avahi-common/simple-watch.h>
++#include <avahi-common/malloc.h>
++#include <avahi-common/error.h>
++
++static AvahiSimplePoll *simple_poll = NULL;
++
++static void resolve_callback(
++    AvahiServiceResolver *r,
++    AvahiIfIndex interface,
++    AvahiProtocol protocol,
++    AvahiResolverEvent event,
++    const char *name,
++    const char *type,
++    const char *domain,
++    const char *host_name,
++    const AvahiAddress *address,
++    uint16_t port,
++    AvahiStringList *txt,
++    void* userdata) {
++
++    assert(r);
++
++    /* Called whenever a service has been resolved successfully or timed out */
++
++    if (event == AVAHI_RESOLVER_TIMEOUT)
++        fprintf(stderr, "Failed to resolve service '%s' of type '%s' in domain '%s'.\n", name, type, domain);
++    else {
++        char a[128], *t;
++
++        assert(event == AVAHI_RESOLVER_FOUND);
++        
++        fprintf(stderr, "Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
++
++        avahi_address_snprint(a, sizeof(a), address);
++        t = avahi_string_list_to_string(txt);
++        fprintf(stderr, "\t%s:%u (%s) TXT=%s\n", host_name, port, a, t);
++        avahi_free(t);
++    }
++
++    avahi_service_resolver_free(r);
++}
++
++static void browse_callback(
++    AvahiServiceBrowser *b,
++    AvahiIfIndex interface,
++    AvahiProtocol protocol,
++    AvahiBrowserEvent event,
++    const char *name,
++    const char *type,
++    const char *domain,
++    void* userdata) {
++    
++    AvahiClient *c = userdata;
++    assert(b);
++
++    /* Called whenever a new services becomes available on the LAN or is removed from the LAN */
++
++    fprintf(stderr, "%s: service '%s' of type '%s' in domain '%s'\n",
++            event == AVAHI_BROWSER_NEW ? "NEW" : "REMOVED",
++            name,
++            type,
++            domain);
++    
++    /* If it's new, let's resolve it */
++    if (event == AVAHI_BROWSER_NEW)
++        
++        /* We ignore the returned resolver object. In the callback function
++        we free it. If the server is terminated before the callback
++        function is called the server will free the resolver for us. */
++
++        if (!(avahi_service_resolver_new(c, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, resolve_callback, c)))
++            fprintf(stderr, "Failed to resolve service '%s': %s\n", name, avahi_strerror(avahi_client_errno(c)));
++}
++
++static void client_callback(AvahiClient *c, AvahiClientState state, void * userdata) {
++    assert(c);
++
++    /* Called whenever the client or server state changes */
++
++    if (state == AVAHI_CLIENT_DISCONNECTED) {
++        fprintf(stderr, "Server connection terminated.\n");
++        avahi_simple_poll_quit(simple_poll);
++    }
++}
++
++int main(int argc, char*argv[]) {
++    AvahiClient *client = NULL;
++    AvahiServiceBrowser *sb;
++    int error;
++    int ret = 1;
++
++    /* Allocate main loop object */
++    if (!(simple_poll = avahi_simple_poll_new())) {
++        fprintf(stderr, "Failed to create simple poll object.\n");
++        goto fail;
++    }
++
++    /* Allocate a new client */
++    client = avahi_client_new(avahi_simple_poll_get(simple_poll), client_callback, NULL, &error);
++
++    /* Check wether creating the client object succeeded */
++    if (!client) {
++        fprintf(stderr, "Failed to create client: %s\n", avahi_strerror(error));
++        goto fail;
++    }
++    
++    /* Create the service browser */
++    if (!(sb = avahi_service_browser_new(client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, browse_callback, client))) {
++        fprintf(stderr, "Failed to create service browser: %s\n", avahi_strerror(avahi_client_errno(client)));
++        goto fail;
++    }
++    
++    /* Run the main loop */
++    for (;;)
++        if (avahi_simple_poll_iterate(simple_poll, -1) != 0)
++            break;
++    
++    ret = 0;
++    
++fail:
++    
++    /* Cleanup things */
++    if (sb)
++        avahi_service_browser_free(sb);
++    
++    if (client)
++        avahi_client_free(client);
++
++    if (simple_poll)
++        avahi_simple_poll_free(simple_poll);
++
++    return ret;
++}
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+new file mode 100644
+index 0000000..9b12f5c
+--- /dev/null
++++ b/examples/client-publish-service.c
+@@ -0,0 +1,178 @@
++/* $Id$ */
++
++/***
++  This file is part of avahi.
++ 
++  avahi is free software; you can redistribute it and/or modify it
++  under the terms of the GNU Lesser General Public License as
++  published by the Free Software Foundation; either version 2.1 of the
++  License, or (at your option) any later version.
++ 
++  avahi is distributed in the hope that it will be useful, but WITHOUT
++  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++  or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General
++  Public License for more details.
++ 
++  You should have received a copy of the GNU Lesser General Public
++  License along with avahi; if not, write to the Free Software
++  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
++  USA.
++***/
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#include <time.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <assert.h>
++
++#include <avahi-client/client.h>
++#include <avahi-common/alternative.h>
++#include <avahi-common/simple-watch.h>
++#include <avahi-common/malloc.h>
++#include <avahi-common/error.h>
++
++static AvahiEntryGroup *group = NULL;
++static AvahiSimplePoll *simple_poll = NULL;
++static char *name = NULL;
++
++static void create_services(AvahiClient *c);
++
++static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state, void *userdata) {
++    assert(g == group);
++
++    /* Called whenever the entry group state changes */
++
++    if (state == AVAHI_ENTRY_GROUP_ESTABLISHED)
++        /* The entry group has been established successfully */
++        fprintf(stderr, "Service '%s' successfully established.\n", name);
++    
++    else if (state == AVAHI_ENTRY_GROUP_COLLISION) {
++        char *n;
++
++        /* A service name collision happened. Let's pick a new name */
++        n = avahi_alternative_service_name(name);
++        avahi_free(name);
++        name = n;
++
++        fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
++
++        /* And recreate the services */
++        create_services(avahi_entry_group_get_client(g));
++    }
++}
++
++static void create_services(AvahiClient *c) {
++    char r[128];
++    int ret;
++    assert(c);
++
++    /* If this is the first time we're called, let's create a new entry group */
++    if (!group) {
++        if (!(group = avahi_entry_group_new(c, entry_group_callback, NULL))) {
++            fprintf(stderr, "avahi_entry_group_new() failed: %s\n", avahi_strerror(avahi_client_errno(c)));
++            goto fail;
++        }
++    }
++    
++    fprintf(stderr, "Adding service '%s'\n", name);
++
++    /* Create some random TXT data */
++    snprintf(r, sizeof(r), "random=%i", rand());
++
++    /* Add the service for IPP */
++    if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL)) < 0) {
++        fprintf(stderr, "Failed to add _ipp._tcp service: %s\n", avahi_strerror(ret));
++        goto fail;
++    }
++
++    /* Add the same service for BSD LPR */
++    if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_printer._tcp", NULL, NULL, 515, NULL)) < 0) {
++        fprintf(stderr, "Failed to add _printer._tcp service: %s\n", avahi_strerror(ret));
++        goto fail;
++    }
++
++    /* Tell the server to register the service */
++    if ((ret = avahi_entry_group_commit(group)) < 0) {
++        fprintf(stderr, "Failed to commit entry_group: %s\n", avahi_strerror(ret));
++        goto fail;
++    }
++
++    return;
++
++fail:
++    avahi_simple_poll_quit(simple_poll);
++    return;
++}
++
++static void client_callback(AvahiClient *c, AvahiClientState state, void * userdata) {
++    assert(c);
++
++    /* Called whenever the client or server state changes */
++
++    if (state == AVAHI_CLIENT_S_RUNNING)
++        /* The serve has startup successfully and registered its host
++         * name on the network, so it's time to create our services */
++        create_services(c);
++    
++    else if (state == AVAHI_CLIENT_S_COLLISION) {
++        /* Let's drop our registered services. When the server is back
++         * in AVAHI_SERVER_RUNNING state we will register them
++         * again with the new host name. */
++        if (group)
++            avahi_entry_group_reset(group);
++        
++    } else if (state == AVAHI_CLIENT_DISCONNECTED) {
++
++        fprintf(stderr, "Server connection terminated.\n");
++        avahi_simple_poll_quit(simple_poll);
++    }
++}
++
++int main(int argc, char*argv[]) {
++    AvahiClient *client = NULL;
++    int error;
++    int ret = 1;
++    
++    /* Allocate main loop object */
++    if (!(simple_poll = avahi_simple_poll_new())) {
++        fprintf(stderr, "Failed to create simple poll object.\n");
++        goto fail;
++    }
++    
++    name = avahi_strdup("MegaPrinter");
++
++    /* Allocate a new client */
++    client = avahi_client_new(avahi_simple_poll_get(simple_poll), client_callback, NULL, &error);
++
++    /* Check wether creating the client object succeeded */
++    if (!client) {
++        fprintf(stderr, "Failed to create client: %s\n", avahi_strerror(error));
++        goto fail;
++    }
++    
++    /* Run the main loop */
++    for (;;)
++        if (avahi_simple_poll_iterate(simple_poll, -1) != 0)
++            break;
++    
++    ret = 0;
++    
++fail:
++    
++    /* Cleanup things */
++    if (group)
++        avahi_entry_group_free(group);
++
++    if (client)
++        avahi_client_free(client);
++
++    if (simple_poll)
++        avahi_simple_poll_free(simple_poll);
++
++    avahi_free(name);
++    
++    return ret;
++}
+diff --git a/examples/browse-services.c b/examples/core-browse-services.c
+similarity index 100%
+rename from examples/browse-services.c
+rename to examples/core-browse-services.c
+diff --git a/examples/publish-service.c b/examples/core-publish-service.c
+similarity index 98%
+rename from examples/publish-service.c
+rename to examples/core-publish-service.c
+index 6132622..dace548 100644
+--- a/examples/publish-service.c
++++ b/examples/core-publish-service.c
+@@ -171,7 +171,7 @@ int main(int argc, char*argv[]) {
+ 
+     /* Check wether creating the server object succeeded */
+     if (!server) {
+-        fprintf(stderr, "Failed to create server: %s", avahi_strerror(error));
++        fprintf(stderr, "Failed to create server: %s\n", avahi_strerror(error));
+         goto fail;
+     }
+     
+
+commit af548e38c2c282132ddac2a75a76218ff3be3175
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sat Aug 20 23:11:50 2005 +0000
+
+    * Add avahi-client examples to doxygen
+    * tighten avahi-core default #includes a bit
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@365 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index 7227bd7..e723339 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -31,6 +31,7 @@
+ #include <avahi-core/core.h>
+ #include <avahi-common/simple-watch.h>
+ #include <avahi-common/malloc.h>
++#include <avahi-common/error.h>
+ 
+ static AvahiSimplePoll *simple_poll = NULL;
+ 
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index dace548..3021094 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -31,6 +31,8 @@
+ #include <avahi-core/core.h>
+ #include <avahi-common/simple-watch.h>
+ #include <avahi-common/malloc.h>
++#include <avahi-common/alternative.h>
++#include <avahi-common/error.h>
+ 
+ static AvahiSEntryGroup *group = NULL;
+ static AvahiSimplePoll *simple_poll = NULL;
+
+commit 5f48d06b012ec8326f6f1c38f11b0abe64a56878
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sun Aug 21 01:26:44 2005 +0000
+
+    Built client examples only when DBUS is available
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@375 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/Makefile.am b/examples/Makefile.am
+index da233b9..fa26456 100644
+--- a/examples/Makefile.am
++++ b/examples/Makefile.am
+@@ -21,9 +21,7 @@ AM_CFLAGS=-I$(top_srcdir)
+ 
+ noinst_PROGRAMS = \
+ 	core-publish-service \
+-	core-browse-services \
+-	client-publish-service \
+-	client-browse-services
++	core-browse-services
+ 
+ core_publish_service_SOURCES = core-publish-service.c
+ core_publish_service_CFLAGS = $(AM_CFLAGS)
+@@ -33,6 +31,12 @@ core_browse_services_SOURCES = core-browse-services.c
+ core_browse_services_CFLAGS = $(AM_CFLAGS)
+ core_browse_services_LDADD = $(AM_LDADD) ../avahi-core/libavahi-core.la ../avahi-common/libavahi-common.la
+ 
++
++if HAVE_DBUS
++
++noinst_PROGRAMS += \
++	client-publish-service \
++	client-browse-services
+ client_publish_service_SOURCES = client-publish-service.c
+ client_publish_service_CFLAGS = $(AM_CFLAGS)
+ client_publish_service_LDADD = $(AM_LDADD) ../avahi-client/libavahi-client.la ../avahi-common/libavahi-common.la
+@@ -40,3 +44,5 @@ client_publish_service_LDADD = $(AM_LDADD) ../avahi-client/libavahi-client.la ..
+ client_browse_services_SOURCES = client-browse-services.c
+ client_browse_services_CFLAGS = $(AM_CFLAGS)
+ client_browse_services_LDADD = $(AM_LDADD) ../avahi-client/libavahi-client.la ../avahi-common/libavahi-common.la
++
++endif
+
+commit 723e4d07d4782c866ffee5329a373d8cbed2e5ff
+Author: Trent Lloyd <lathiat@bur.st>
+Date:   Mon Aug 22 19:07:08 2005 +0000
+
+     * Add glib integration example.
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@394 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/Makefile.am b/examples/Makefile.am
+index fa26456..137dd55 100644
+--- a/examples/Makefile.am
++++ b/examples/Makefile.am
+@@ -46,3 +46,13 @@ client_browse_services_CFLAGS = $(AM_CFLAGS)
+ client_browse_services_LDADD = $(AM_LDADD) ../avahi-client/libavahi-client.la ../avahi-common/libavahi-common.la
+ 
+ endif
++
++if HAVE_GTK
++
++noinst_PROGRAMS += \
++	glib-integration
++glib_integration_SOURCES = glib-integration.c
++glib_integration_CFLAGS = $(AM_CFLAGS) $(GLIB20_CFLAGS)
++glib_integration_LDADD = $(AM_LDADD) $(GLIB20_LIBS) ../avahi-client/libavahi-client.la ../avahi-common/libavahi-common.la ../avahi-glib/libavahi-glib.la
++
++endif
+diff --git a/examples/glib-integration.c b/examples/glib-integration.c
+new file mode 100644
+index 0000000..4c17ebf
+--- /dev/null
++++ b/examples/glib-integration.c
+@@ -0,0 +1,141 @@
++/* $Id$ */
++
++/***
++  This file is part of avahi.
++ 
++  avahi is free software; you can redistribute it and/or modify it
++  under the terms of the GNU Lesser General Public License as
++  published by the Free Software Foundation; either version 2.1 of the
++  License, or (at your option) any later version.
++ 
++  avahi is distributed in the hope that it will be useful, but WITHOUT
++  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++  or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General
++  Public License for more details.
++ 
++  You should have received a copy of the GNU Lesser General Public
++  License along with avahi; if not, write to the Free Software
++  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
++  USA.
++***/
++
++#include <glib.h>
++
++#include <avahi-client/client.h>
++#include <avahi-common/error.h>
++#include <avahi-common/timeval.h>
++#include <avahi-glib/glib-watch.h>
++#include <avahi-glib/glib-malloc.h>
++
++/* Callback for Avahi API Timeout Event */
++static void
++avahi_timeout_event (AvahiTimeout *timeout, void *userdata)
++{
++    g_message ("Avahi API Timeout reached!");
++}
++
++/* Callback for GLIB API Timeout Event */
++static gboolean
++avahi_timeout_event_glib (void *userdata)
++{
++    GMainLoop *loop = userdata;
++
++    g_message ("GLIB API Timeout reached, quitting main loop!");
++    
++    /* Quit the application */
++    g_main_loop_quit (loop);
++
++    return FALSE; /* Don't re-schedule timeout event */
++}
++
++/* Callback for state changes on the Client */
++static void
++avahi_client_callback (AvahiClient *client, AvahiClientState state, void *userdata)
++{
++    GMainLoop *loop = userdata;
++
++    g_message ("Avahi Client State Change: %d", state);
++
++    if (state == AVAHI_CLIENT_DISCONNECTED)
++    {
++        /* We we're disconnected from the Daemon */
++        g_message ("Disconnected from the Avahi Daemon");
++
++        /* Quit the application */
++        g_main_loop_quit (loop);
++    }
++}
++
++int
++main (int argc, char *argv[])
++{
++    GMainLoop *loop = NULL;
++    const AvahiPoll *poll_api;
++    AvahiGLibPoll *glib_poll;
++    AvahiClient *client;
++    struct timeval tv;
++    const char *version;
++    int error;
++
++    /* Optional: Tell avahi to use g_malloc and g_free */
++    avahi_set_allocator (avahi_glib_allocator ());
++
++    /* Create the GLIB main loop */
++    loop = g_main_loop_new (NULL, FALSE);
++
++    /* Create the GLIB Adaptor */
++    glib_poll = avahi_glib_poll_new (NULL, G_PRIORITY_DEFAULT);
++    poll_api = avahi_glib_poll_get (glib_poll);
++
++    /* Example, schedule a timeout event with the Avahi API */
++    avahi_elapse_time (&tv,                         /* timeval structure */
++            1000,                                   /* 1 second */
++            0);                                     /* "jitter" - Random additional delay from 0 to this value */
++
++    poll_api->timeout_new (poll_api,                /* The AvahiPoll object */
++                      &tv,                          /* struct timeval indicating when to go activate */
++                      avahi_timeout_event,          /* Pointer to function to call */
++                      NULL);                        /* User data to pass to function */
++
++    /* Schedule a timeout event with the glib api */
++    g_timeout_add (5000,                            /* 5 seconds */
++            avahi_timeout_event_glib,               /* Pointer to function callback */
++            loop);                                  /* User data to pass to function */
++
++    /* Create a new AvahiClient instance */
++    client = avahi_client_new (poll_api,            /* AvahiPoll object from above */
++            avahi_client_callback,                  /* Callback function for Client state changes */
++            loop,                                   /* User data */
++            &error);                                /* Error return */
++
++    /* Check the error return code */
++    if (client == NULL)
++    {
++        /* Print out the error string */
++        g_warning ("Error initializing Avahi: %s", avahi_strerror (error));
++
++        goto fail;
++    }
++   
++    /* Make a call to get the version string from the daemon */
++    version = avahi_client_get_version_string (client);
++
++    /* Check if the call suceeded */
++    if (version == NULL)
++    {
++        g_warning ("Error getting version string: %s", avahi_strerror (avahi_client_errno (client)));
++
++        goto fail;
++    }
++        
++    g_message ("Avahi Server Version: %s", version);
++
++    /* Start the GLIB Main Loop */
++    g_main_loop_run (loop);
++
++fail:
++    /* Clean up */
++    g_main_loop_unref (loop);
++    avahi_client_free (client);
++    avahi_glib_poll_free (glib_poll);
++}
+
+commit 80b2dc3f647384cce2a498efeb5e5ea85344635f
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Mon Aug 22 20:02:18 2005 +0000
+
+    * fix glib example build when compiling without DBUS but with GLIB
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@396 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/Makefile.am b/examples/Makefile.am
+index 137dd55..2a3d48e 100644
+--- a/examples/Makefile.am
++++ b/examples/Makefile.am
+@@ -45,9 +45,7 @@ client_browse_services_SOURCES = client-browse-services.c
+ client_browse_services_CFLAGS = $(AM_CFLAGS)
+ client_browse_services_LDADD = $(AM_LDADD) ../avahi-client/libavahi-client.la ../avahi-common/libavahi-common.la
+ 
+-endif
+-
+-if HAVE_GTK
++if HAVE_GLIB
+ 
+ noinst_PROGRAMS += \
+ 	glib-integration
+@@ -56,3 +54,5 @@ glib_integration_CFLAGS = $(AM_CFLAGS) $(GLIB20_CFLAGS)
+ glib_integration_LDADD = $(AM_LDADD) $(GLIB20_LIBS) ../avahi-client/libavahi-client.la ../avahi-common/libavahi-common.la ../avahi-glib/libavahi-glib.la
+ 
+ endif
++
++endif
+
+commit 83c0bc0c4f8701e71d34896472810d0f5c73fbe5
+Author: Trent Lloyd <lathiat@bur.st>
+Date:   Tue Aug 23 06:37:21 2005 +0000
+
+     * Mention a 'none' option to --with-distro for distributions that are not known.
+     * Add a return 0 to the glib integration example, better make good code examples I suppose. :)
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@405 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/glib-integration.c b/examples/glib-integration.c
+index 4c17ebf..fa68693 100644
+--- a/examples/glib-integration.c
++++ b/examples/glib-integration.c
+@@ -138,4 +138,6 @@ fail:
+     g_main_loop_unref (loop);
+     avahi_client_free (client);
+     avahi_glib_poll_free (glib_poll);
++
++    return 0;
+ }
+
+commit eadae6cf5a0d3c4f21d11a65b0b7130d5082426d
+Author: Trent Lloyd <lathiat@bur.st>
+Date:   Sun Aug 28 20:55:40 2005 +0000
+
+     * Add new docs/NEWS file, updated for 0.2 release.
+     * Add warning to examples/core-browse-services.c, warning
+       the onlooker that they are probably looking for
+       client-browse-services.c
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@478 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index e723339..d91a67c 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -1,5 +1,16 @@
+ /* $Id$ */
+ 
++/* PLEASE NOTE *
++ * This file demonstrates how to use Avahi's core API, this is
++ * the embeddable mDNS stack for embedded applications.
++ *
++ * End user applications should *not* use this API and should use
++ * the DBUS or C APIs, please see
++ * client-browse-services.c and glib-integration.c
++ * 
++ * I repeat, you probably do *not* want to use this example.
++ */
++
+ /***
+   This file is part of avahi.
+  
+
+commit b6306c88b9279d8194afa85a6497c39531b3bfa9
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sat Sep 10 00:54:29 2005 +0000
+
+    update examples to make use of avahi_string_list_get_service_cookie() for whatever it is worth
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@558 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index 80fa934..916b12b 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -64,7 +64,7 @@ static void resolve_callback(
+ 
+         avahi_address_snprint(a, sizeof(a), address);
+         t = avahi_string_list_to_string(txt);
+-        fprintf(stderr, "\t%s:%u (%s) TXT=%s\n", host_name, port, a, t);
++        fprintf(stderr, "\t%s:%u (%s) TXT=%s (cookie is %u)\n", host_name, port, a, t, avahi_string_list_get_service_cookie(txt));
+         avahi_free(t);
+     }
+ 
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index d91a67c..8df5454 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -75,7 +75,7 @@ static void resolve_callback(
+ 
+         avahi_address_snprint(a, sizeof(a), address);
+         t = avahi_string_list_to_string(txt);
+-        fprintf(stderr, "\t%s:%u (%s) TXT=%s\n", host_name, port, a, t);
++        fprintf(stderr, "\t%s:%u (%s) TXT=%s (cookie is %u)\n", host_name, port, a, t, avahi_string_list_get_service_cookie(txt));
+         avahi_free(t);
+     }
+ 
+
+commit 5e381961004ca0075e5b48a1cf12d86d5177d734
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sat Sep 10 02:23:59 2005 +0000
+
+    update examples to use xxx_is_service_local()
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@564 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index 916b12b..7537940 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -64,7 +64,15 @@ static void resolve_callback(
+ 
+         avahi_address_snprint(a, sizeof(a), address);
+         t = avahi_string_list_to_string(txt);
+-        fprintf(stderr, "\t%s:%u (%s) TXT=%s (cookie is %u)\n", host_name, port, a, t, avahi_string_list_get_service_cookie(txt));
++        fprintf(stderr,
++                "\t%s:%u (%s)\n"
++                "\tTXT=%s\n"
++                "\tcookie is %u\n"
++                "\tis_local: %i\n",
++                host_name, port, a,
++                t,
++                avahi_string_list_get_service_cookie(txt),
++                avahi_client_is_service_local(avahi_service_resolver_get_client(r), interface, protocol, name, type, domain));
+         avahi_free(t);
+     }
+ 
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index 8df5454..f3bf782 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -45,6 +45,7 @@
+ #include <avahi-common/error.h>
+ 
+ static AvahiSimplePoll *simple_poll = NULL;
++static AvahiServer *server = NULL;
+ 
+ static void resolve_callback(
+     AvahiSServiceResolver *r,
+@@ -75,7 +76,15 @@ static void resolve_callback(
+ 
+         avahi_address_snprint(a, sizeof(a), address);
+         t = avahi_string_list_to_string(txt);
+-        fprintf(stderr, "\t%s:%u (%s) TXT=%s (cookie is %u)\n", host_name, port, a, t, avahi_string_list_get_service_cookie(txt));
++        fprintf(stderr,
++                "\t%s:%u (%s)\n"
++                "\tTXT=%s\n"
++                "\tcookie is %u\n"
++                "\tis_local: %i\n",
++                host_name, port, a,
++                t,
++                avahi_string_list_get_service_cookie(txt),
++                avahi_server_is_service_local(server, interface, protocol, name, type, domain));
+         avahi_free(t);
+     }
+ 
+@@ -116,7 +125,6 @@ static void browse_callback(
+ 
+ int main(int argc, char*argv[]) {
+     AvahiServerConfig config;
+-    AvahiServer *server = NULL;
+     AvahiSServiceBrowser *sb;
+     int error;
+     int ret = 1;
+
+commit bf7f48d6f58f28681b81915ddc4723950b947346
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sun Sep 25 20:16:15 2005 +0000
+
+    update examples to reflect recent API changes (wide area)
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@612 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index 7537940..d03fa31 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -47,33 +47,46 @@ static void resolve_callback(
+     const AvahiAddress *address,
+     uint16_t port,
+     AvahiStringList *txt,
++    AvahiLookupResultFlags flags,
+     void* userdata) {
+ 
+     assert(r);
+ 
+     /* Called whenever a service has been resolved successfully or timed out */
+ 
+-    if (event == AVAHI_RESOLVER_TIMEOUT)
+-        fprintf(stderr, "Failed to resolve service '%s' of type '%s' in domain '%s'.\n", name, type, domain);
+-    else {
+-        char a[128], *t;
+-
+-        assert(event == AVAHI_RESOLVER_FOUND);
+-        
+-        fprintf(stderr, "Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
+-
+-        avahi_address_snprint(a, sizeof(a), address);
+-        t = avahi_string_list_to_string(txt);
+-        fprintf(stderr,
+-                "\t%s:%u (%s)\n"
+-                "\tTXT=%s\n"
+-                "\tcookie is %u\n"
+-                "\tis_local: %i\n",
+-                host_name, port, a,
+-                t,
+-                avahi_string_list_get_service_cookie(txt),
+-                avahi_client_is_service_local(avahi_service_resolver_get_client(r), interface, protocol, name, type, domain));
+-        avahi_free(t);
++    switch (event) {
++        case AVAHI_RESOLVER_TIMEOUT:
++        case AVAHI_RESOLVER_NOT_FOUND:
++        case AVAHI_RESOLVER_FAILURE:
++            fprintf(stderr, "(Resolver) Failed to resolve service '%s' of type '%s' in domain '%s': %s\n", name, type, domain,
++                    event == AVAHI_RESOLVER_TIMEOUT ? "TIMEOUT" : (event == AVAHI_RESOLVER_NOT_FOUND ? "NOT_FOUND" : "FAILURE"));
++
++
++        case AVAHI_RESOLVER_FOUND: {
++            char a[128], *t;
++            
++            fprintf(stderr, "Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
++            
++            avahi_address_snprint(a, sizeof(a), address);
++            t = avahi_string_list_to_string(txt);
++            fprintf(stderr,
++                    "\t%s:%u (%s)\n"
++                    "\tTXT=%s\n"
++                    "\tcookie is %u\n"
++                    "\tis_local: %i\n"
++                    "\twide_area: %i\n"
++                    "\tmulticast: %i\n"
++                    "\tcached: %i\n",
++                    host_name, port, a,
++                    t,
++                    avahi_string_list_get_service_cookie(txt),
++                    avahi_client_is_service_local(avahi_service_resolver_get_client(r), interface, protocol, name, type, domain),
++                    !!(flags & AVAHI_LOOKUP_CALLBACK_WIDE_AREA),
++                    !!(flags & AVAHI_LOOKUP_CALLBACK_MULTICAST),
++                    !!(flags & AVAHI_LOOKUP_CALLBACK_CACHED));
++                
++            avahi_free(t);
++        }
+     }
+ 
+     avahi_service_resolver_free(r);
+@@ -87,6 +100,7 @@ static void browse_callback(
+     const char *name,
+     const char *type,
+     const char *domain,
++    AvahiLookupResultFlags flags,
+     void* userdata) {
+     
+     AvahiClient *c = userdata;
+@@ -94,21 +108,37 @@ static void browse_callback(
+ 
+     /* Called whenever a new services becomes available on the LAN or is removed from the LAN */
+ 
+-    fprintf(stderr, "%s: service '%s' of type '%s' in domain '%s'\n",
+-            event == AVAHI_BROWSER_NEW ? "NEW" : "REMOVED",
+-            name,
+-            type,
+-            domain);
+-    
+-    /* If it's new, let's resolve it */
+-    if (event == AVAHI_BROWSER_NEW)
+-        
+-        /* We ignore the returned resolver object. In the callback function
+-        we free it. If the server is terminated before the callback
+-        function is called the server will free the resolver for us. */
+-
+-        if (!(avahi_service_resolver_new(c, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, resolve_callback, c)))
+-            fprintf(stderr, "Failed to resolve service '%s': %s\n", name, avahi_strerror(avahi_client_errno(c)));
++    switch (event) {
++        case AVAHI_BROWSER_FAILURE:
++        case AVAHI_BROWSER_NOT_FOUND:
++            
++            fprintf(stderr, "(Browser) %s\n", event == AVAHI_BROWSER_FAILURE ? "FAILURE" : "NOT_FOUND");
++            avahi_simple_poll_quit(simple_poll);
++            return;
++
++        case AVAHI_BROWSER_NEW:
++            fprintf(stderr, "(Browser) NEW: service '%s' of type '%s' in domain '%s'\n", name, type, domain);
++
++            /* We ignore the returned resolver object. In the callback
++               function we free it. If the server is terminated before
++               the callback function is called the server will free
++               the resolver for us. */
++
++            if (!(avahi_service_resolver_new(c, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, 0, resolve_callback, c)))
++                fprintf(stderr, "Failed to resolve service '%s': %s\n", name, avahi_strerror(avahi_client_errno(c)));
++            
++            break;
++
++        case AVAHI_BROWSER_REMOVE:
++            fprintf(stderr, "(Browser) REMOVE: service '%s' of type '%s' in domain '%s'\n", name, type, domain);
++            break;
++
++        case AVAHI_BROWSER_ALL_FOR_NOW:
++        case AVAHI_BROWSER_CACHE_EXHAUSTED:
++            fprintf(stderr, "(Browser) %s\n", event == AVAHI_BROWSER_CACHE_EXHAUSTED ? "CACHE_EXHAUSTED" : "ALL_FOR_NOW");
++            break;
++
++    }
+ }
+ 
+ static void client_callback(AvahiClient *c, AvahiClientState state, void * userdata) {
+@@ -124,7 +154,7 @@ static void client_callback(AvahiClient *c, AvahiClientState state, void * userd
+ 
+ int main(int argc, char*argv[]) {
+     AvahiClient *client = NULL;
+-    AvahiServiceBrowser *sb;
++    AvahiServiceBrowser *sb = NULL;
+     int error;
+     int ret = 1;
+ 
+@@ -144,7 +174,7 @@ int main(int argc, char*argv[]) {
+     }
+     
+     /* Create the service browser */
+-    if (!(sb = avahi_service_browser_new(client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, browse_callback, client))) {
++    if (!(sb = avahi_service_browser_new(client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, 0, browse_callback, client))) {
+         fprintf(stderr, "Failed to create service browser: %s\n", avahi_strerror(avahi_client_errno(client)));
+         goto fail;
+     }
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index f3bf782..86b18a0 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -40,6 +40,7 @@
+ #include <time.h>
+ 
+ #include <avahi-core/core.h>
++#include <avahi-core/lookup.h>
+ #include <avahi-common/simple-watch.h>
+ #include <avahi-common/malloc.h>
+ #include <avahi-common/error.h>
+@@ -59,35 +60,46 @@ static void resolve_callback(
+     const AvahiAddress *address,
+     uint16_t port,
+     AvahiStringList *txt,
++    AvahiLookupResultFlags flags,
+     void* userdata) {
+     
+     assert(r);
+ 
+     /* Called whenever a service has been resolved successfully or timed out */
+ 
+-    if (event == AVAHI_RESOLVER_TIMEOUT)
+-        fprintf(stderr, "Failed to resolve service '%s' of type '%s' in domain '%s'.\n", name, type, domain);
+-    else {
+-        char a[128], *t;
+-
+-        assert(event == AVAHI_RESOLVER_FOUND);
+-        
+-        fprintf(stderr, "Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
+-
+-        avahi_address_snprint(a, sizeof(a), address);
+-        t = avahi_string_list_to_string(txt);
+-        fprintf(stderr,
+-                "\t%s:%u (%s)\n"
+-                "\tTXT=%s\n"
+-                "\tcookie is %u\n"
+-                "\tis_local: %i\n",
+-                host_name, port, a,
+-                t,
+-                avahi_string_list_get_service_cookie(txt),
+-                avahi_server_is_service_local(server, interface, protocol, name, type, domain));
+-        avahi_free(t);
++    switch (event) {
++        case AVAHI_RESOLVER_TIMEOUT:
++        case AVAHI_RESOLVER_NOT_FOUND:
++        case AVAHI_RESOLVER_FAILURE:
++            fprintf(stderr, "Failed to resolve service '%s' of type '%s' in domain '%s': %s\n", name, type, domain,
++                    event == AVAHI_RESOLVER_TIMEOUT ? "TIMEOUT" : (event == AVAHI_RESOLVER_NOT_FOUND ? "NOT_FOUND" : "FAILURE"));
++
++        case AVAHI_RESOLVER_FOUND: {
++            char a[128], *t;
++            
++            fprintf(stderr, "Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
++            
++            avahi_address_snprint(a, sizeof(a), address);
++            t = avahi_string_list_to_string(txt);
++            fprintf(stderr,
++                    "\t%s:%u (%s)\n"
++                    "\tTXT=%s\n"
++                    "\tcookie is %u\n"
++                    "\tis_local: %i\n"
++                    "\twide_area: %i\n"
++                    "\tmulticast: %i\n"
++                    "\tcached: %i\n",
++                    host_name, port, a,
++                    t,
++                    avahi_string_list_get_service_cookie(txt),
++                    avahi_server_is_service_local(server, interface, protocol, name, type, domain),
++                    !!(flags & AVAHI_LOOKUP_CALLBACK_WIDE_AREA),
++                    !!(flags & AVAHI_LOOKUP_CALLBACK_MULTICAST),
++                    !!(flags & AVAHI_LOOKUP_CALLBACK_CACHED));
++            avahi_free(t);
++        }
+     }
+-
++    
+     avahi_s_service_resolver_free(r);
+ }
+ 
+@@ -99,6 +111,7 @@ static void browse_callback(
+     const char *name,
+     const char *type,
+     const char *domain,
++    AvahiLookupResultFlags flags,
+     void* userdata) {
+     
+     AvahiServer *s = userdata;
+@@ -106,21 +119,37 @@ static void browse_callback(
+ 
+     /* Called whenever a new services becomes available on the LAN or is removed from the LAN */
+ 
+-    fprintf(stderr, "%s: service '%s' of type '%s' in domain '%s'\n",
+-            event == AVAHI_BROWSER_NEW ? "NEW" : "REMOVED",
+-            name,
+-            type,
+-            domain);
+-    
+-    /* If it's new, let's resolve it */
+-    if (event == AVAHI_BROWSER_NEW)
+-        
+-        /* We ignore the returned resolver object. In the callback function
+-        we free it. If the server is terminated before the callback
+-        function is called the server will free the resolver for us. */
+-
+-        if (!(avahi_s_service_resolver_new(s, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, resolve_callback, s)))
+-            fprintf(stderr, "Failed to resolve service '%s': %s\n", name, avahi_strerror(avahi_server_errno(s)));
++    switch (event) {
++
++        case AVAHI_BROWSER_FAILURE:
++        case AVAHI_BROWSER_NOT_FOUND:
++            
++            fprintf(stderr, "(Browser) %s\n", event == AVAHI_BROWSER_FAILURE ? "FAILURE" : "NOT_FOUND");
++            avahi_simple_poll_quit(simple_poll);
++            return;
++
++        case AVAHI_BROWSER_NEW:
++            fprintf(stderr, "(Browser) NEW: service '%s' of type '%s' in domain '%s'\n", name, type, domain);
++
++            /* We ignore the returned resolver object. In the callback
++               function we free it. If the server is terminated before
++               the callback function is called the server will free
++               the resolver for us. */
++            
++            if (!(avahi_s_service_resolver_new(s, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, 0, resolve_callback, s)))
++                fprintf(stderr, "Failed to resolve service '%s': %s\n", name, avahi_strerror(avahi_server_errno(s)));
++            
++            break;
++
++        case AVAHI_BROWSER_REMOVE:
++            fprintf(stderr, "(Browser) REMOVE: service '%s' of type '%s' in domain '%s'\n", name, type, domain);
++            break;
++
++        case AVAHI_BROWSER_ALL_FOR_NOW:
++        case AVAHI_BROWSER_CACHE_EXHAUSTED:
++            fprintf(stderr, "(Browser) %s\n", event == AVAHI_BROWSER_CACHE_EXHAUSTED ? "CACHE_EXHAUSTED" : "ALL_FOR_NOW");
++            break;
++    }
+ }
+ 
+ int main(int argc, char*argv[]) {
+@@ -144,6 +173,11 @@ int main(int argc, char*argv[]) {
+     config.publish_addresses = 0;
+     config.publish_workstation = 0;
+     config.publish_domain = 0;
++
++    /* Set a unicast DNS server for wide area DNS-SD */
++    avahi_address_parse("192.168.50.1", AVAHI_PROTO_UNSPEC, &config.wide_area_servers[0]);
++    config.n_wide_area_servers = 1;
++    config.enable_wide_area = 1;
+     
+     /* Allocate a new server */
+     server = avahi_server_new(avahi_simple_poll_get(simple_poll), &config, NULL, NULL, &error);
+@@ -158,7 +192,7 @@ int main(int argc, char*argv[]) {
+     }
+     
+     /* Create the service browser */
+-    if (!(sb = avahi_s_service_browser_new(server, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, browse_callback, server))) {
++    if (!(sb = avahi_s_service_browser_new(server, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, 0, browse_callback, server))) {
+         fprintf(stderr, "Failed to create service browser: %s\n", avahi_strerror(avahi_server_errno(server)));
+         goto fail;
+     }
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index 3021094..67f88db 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -29,6 +29,7 @@
+ #include <assert.h>
+ 
+ #include <avahi-core/core.h>
++#include <avahi-core/publish.h>
+ #include <avahi-common/simple-watch.h>
+ #include <avahi-common/malloc.h>
+ #include <avahi-common/alternative.h>
+
+commit 8185ec8431c51946095d3f11e80545e3519f67cf
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sun Sep 25 22:23:32 2005 +0000
+
+    s/AVAHI_LOOKUP_CALLBACK/AVAHI_LOOKUP_RESULT/g
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@622 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index d03fa31..b4e3411 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -81,9 +81,9 @@ static void resolve_callback(
+                     t,
+                     avahi_string_list_get_service_cookie(txt),
+                     avahi_client_is_service_local(avahi_service_resolver_get_client(r), interface, protocol, name, type, domain),
+-                    !!(flags & AVAHI_LOOKUP_CALLBACK_WIDE_AREA),
+-                    !!(flags & AVAHI_LOOKUP_CALLBACK_MULTICAST),
+-                    !!(flags & AVAHI_LOOKUP_CALLBACK_CACHED));
++                    !!(flags & AVAHI_LOOKUP_RESULT_WIDE_AREA),
++                    !!(flags & AVAHI_LOOKUP_RESULT_MULTICAST),
++                    !!(flags & AVAHI_LOOKUP_RESULT_CACHED));
+                 
+             avahi_free(t);
+         }
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index 86b18a0..50f82bc 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -93,9 +93,9 @@ static void resolve_callback(
+                     t,
+                     avahi_string_list_get_service_cookie(txt),
+                     avahi_server_is_service_local(server, interface, protocol, name, type, domain),
+-                    !!(flags & AVAHI_LOOKUP_CALLBACK_WIDE_AREA),
+-                    !!(flags & AVAHI_LOOKUP_CALLBACK_MULTICAST),
+-                    !!(flags & AVAHI_LOOKUP_CALLBACK_CACHED));
++                    !!(flags & AVAHI_LOOKUP_RESULT_WIDE_AREA),
++                    !!(flags & AVAHI_LOOKUP_RESULT_MULTICAST),
++                    !!(flags & AVAHI_LOOKUP_RESULT_CACHED));
+             avahi_free(t);
+         }
+     }
+
+commit 424aefe8a431b79496672799dc4f4430fa935252
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Thu Sep 29 01:51:53 2005 +0000
+
+    * make all flags parameters UINT32 when marshalling for DBUS
+    * rename AvahiEntryFlags to AvahiPublishFlags
+    * add flags parameter to add_service() and friends
+    * validity checking of flags, interface and protocol parameters of add_service() and friends
+    * make AVAHI_VALID_FLAGS a global macro
+    * add new flag AVAHI_PUBLISH_NO_REVERSE, if set address records will no be created with matching reverse lookup PTR RRs
+    * add new flag AVAHI_PUBLISH_NO_COOKIE, for not implicitly adding the service cookie to TXT records
+    * minor cleanups
+    
+    Yes, this will break the mono bindings. More breakages to come.
+    
+    NO_REVERSE and NO_COOKIE needs testing.
+    
+    Lathiat, I guess the new flag NO_REVERSE makes the immediate need to add a client side API to add arbitrary RRs obsolete for now. You might consider moving it in the TODO list to "later".
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@648 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index 9b12f5c..c3f11ad 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -83,13 +83,13 @@ static void create_services(AvahiClient *c) {
+     snprintf(r, sizeof(r), "random=%i", rand());
+ 
+     /* Add the service for IPP */
+-    if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL)) < 0) {
++    if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL)) < 0) {
+         fprintf(stderr, "Failed to add _ipp._tcp service: %s\n", avahi_strerror(ret));
+         goto fail;
+     }
+ 
+     /* Add the same service for BSD LPR */
+-    if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_printer._tcp", NULL, NULL, 515, NULL)) < 0) {
++    if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, NULL, 515, NULL)) < 0) {
+         fprintf(stderr, "Failed to add _printer._tcp service: %s\n", avahi_strerror(ret));
+         goto fail;
+     }
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index 67f88db..62badf3 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -85,13 +85,13 @@ static void create_services(AvahiServer *s) {
+     snprintf(r, sizeof(r), "random=%i", rand());
+ 
+     /* Add the service for IPP */
+-    if ((ret = avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL)) < 0) {
++    if ((ret = avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL)) < 0) {
+         fprintf(stderr, "Failed to add _ipp._tcp service: %s\n", avahi_strerror(ret));
+         goto fail;
+     }
+ 
+     /* Add the same service for BSD LPR */
+-    if ((ret = avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, name, "_printer._tcp", NULL, NULL, 515, NULL)) < 0) {
++    if ((ret = avahi_server_add_service(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, NULL, 515, NULL)) < 0) {
+         fprintf(stderr, "Failed to add _printer._tcp service: %s\n", avahi_strerror(ret));
+         goto fail;
+     }
+
+commit c9f4a5cc86c896529826038741dd588afde3e0ca
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Thu Sep 29 22:31:36 2005 +0000
+
+    fix switch fall through error
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@655 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index b4e3411..ac65ac4 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -60,7 +60,7 @@ static void resolve_callback(
+         case AVAHI_RESOLVER_FAILURE:
+             fprintf(stderr, "(Resolver) Failed to resolve service '%s' of type '%s' in domain '%s': %s\n", name, type, domain,
+                     event == AVAHI_RESOLVER_TIMEOUT ? "TIMEOUT" : (event == AVAHI_RESOLVER_NOT_FOUND ? "NOT_FOUND" : "FAILURE"));
+-
++            break;
+ 
+         case AVAHI_RESOLVER_FOUND: {
+             char a[128], *t;
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index 50f82bc..c2eb180 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -73,6 +73,7 @@ static void resolve_callback(
+         case AVAHI_RESOLVER_FAILURE:
+             fprintf(stderr, "Failed to resolve service '%s' of type '%s' in domain '%s': %s\n", name, type, domain,
+                     event == AVAHI_RESOLVER_TIMEOUT ? "TIMEOUT" : (event == AVAHI_RESOLVER_NOT_FOUND ? "NOT_FOUND" : "FAILURE"));
++            break;
+ 
+         case AVAHI_RESOLVER_FOUND: {
+             char a[128], *t;
+
+commit c1d9b9cffd6f756339c1d98a2d2914d49195cb41
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Tue Oct 11 00:18:57 2005 +0000
+
+    add support for service subtypes: avahi_server_add_service_subtype()
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@714 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index 62badf3..f826a5f 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -96,6 +96,12 @@ static void create_services(AvahiServer *s) {
+         goto fail;
+     }
+ 
++    /* Add an additional (hypothetic) subtype */
++    if ((ret = avahi_server_add_service_subtype(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, "_magic._sub._printer._tcp") < 0)) {
++        fprintf(stderr, "Failed to add subtype _magic._sub._printer._tcp: %s\n", avahi_strerror(ret));
++        goto fail;
++    }
++
+     /* Tell the server to register the service */
+     if ((ret = avahi_s_entry_group_commit(group)) < 0) {
+         fprintf(stderr, "Failed to commit entry_group: %s\n", avahi_strerror(ret));
+
+commit 14fe3eac316cd3b05458ad9cde3bd3cd2e93fa3e
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Tue Oct 11 01:15:39 2005 +0000
+
+    ### BACKPORT ###
+    fix uninitialized memory access
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@718 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index c2eb180..d2a5e98 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -155,7 +155,7 @@ static void browse_callback(
+ 
+ int main(int argc, char*argv[]) {
+     AvahiServerConfig config;
+-    AvahiSServiceBrowser *sb;
++    AvahiSServiceBrowser *sb = NULL;
+     int error;
+     int ret = 1;
+ 
+
+commit 6daf938592d243f52281a6933f2ed04af937fc1f
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Tue Oct 11 01:24:53 2005 +0000
+
+    add an example for subtype usage
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@722 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index c3f11ad..efc1f2b 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -94,6 +94,12 @@ static void create_services(AvahiClient *c) {
+         goto fail;
+     }
+ 
++    /* Add an additional (hypothetic) subtype */
++    if ((ret = avahi_entry_group_add_service_subtype(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, "_magic._sub._printer._tcp") < 0)) {
++        fprintf(stderr, "Failed to add subtype _magic._sub._printer._tcp: %s\n", avahi_strerror(ret));
++        goto fail;
++    }
++    
+     /* Tell the server to register the service */
+     if ((ret = avahi_entry_group_commit(group)) < 0) {
+         fprintf(stderr, "Failed to commit entry_group: %s\n", avahi_strerror(ret));
+
+commit bb14e0a8aa3173c8a6d80b1a9c8b300a452ee9f1
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Wed Oct 12 02:37:08 2005 +0000
+
+    * drop AVAHI_RESOLVER_TIMEOUT, AVAHI_RESOLVER_NOT_FOUND and AVAHI_BROWSER_NOT_FOUND, use AVAHI_xxx_FAILURE instead
+    * set the client/server errno variable when AVAHI_xxx_FAILURE happens
+    * update DBUS interface accordingly, pass errno value with Failure events
+    * Pass DNS return codes to the app by wrapping them in avahi error codes
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@732 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index ac65ac4..7a6940b 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -55,11 +55,8 @@ static void resolve_callback(
+     /* Called whenever a service has been resolved successfully or timed out */
+ 
+     switch (event) {
+-        case AVAHI_RESOLVER_TIMEOUT:
+-        case AVAHI_RESOLVER_NOT_FOUND:
+         case AVAHI_RESOLVER_FAILURE:
+-            fprintf(stderr, "(Resolver) Failed to resolve service '%s' of type '%s' in domain '%s': %s\n", name, type, domain,
+-                    event == AVAHI_RESOLVER_TIMEOUT ? "TIMEOUT" : (event == AVAHI_RESOLVER_NOT_FOUND ? "NOT_FOUND" : "FAILURE"));
++            fprintf(stderr, "(Resolver) Failed to resolve service '%s' of type '%s' in domain '%s': %s\n", name, type, domain, avahi_strerror(avahi_client_errno(avahi_service_resolver_get_client(r))));
+             break;
+ 
+         case AVAHI_RESOLVER_FOUND: {
+@@ -110,9 +107,8 @@ static void browse_callback(
+ 
+     switch (event) {
+         case AVAHI_BROWSER_FAILURE:
+-        case AVAHI_BROWSER_NOT_FOUND:
+             
+-            fprintf(stderr, "(Browser) %s\n", event == AVAHI_BROWSER_FAILURE ? "FAILURE" : "NOT_FOUND");
++            fprintf(stderr, "(Browser) %s\n", avahi_strerror(avahi_client_errno(avahi_service_browser_get_client(b))));
+             avahi_simple_poll_quit(simple_poll);
+             return;
+ 
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index d2a5e98..5de47b3 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -68,17 +68,14 @@ static void resolve_callback(
+     /* Called whenever a service has been resolved successfully or timed out */
+ 
+     switch (event) {
+-        case AVAHI_RESOLVER_TIMEOUT:
+-        case AVAHI_RESOLVER_NOT_FOUND:
+         case AVAHI_RESOLVER_FAILURE:
+-            fprintf(stderr, "Failed to resolve service '%s' of type '%s' in domain '%s': %s\n", name, type, domain,
+-                    event == AVAHI_RESOLVER_TIMEOUT ? "TIMEOUT" : (event == AVAHI_RESOLVER_NOT_FOUND ? "NOT_FOUND" : "FAILURE"));
++            fprintf(stderr, "(Resolver) Failed to resolve service '%s' of type '%s' in domain '%s': %s\n", name, type, domain, avahi_strerror(avahi_server_errno(server)));
+             break;
+ 
+         case AVAHI_RESOLVER_FOUND: {
+             char a[128], *t;
+             
+-            fprintf(stderr, "Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
++            fprintf(stderr, "(Resolver) Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
+             
+             avahi_address_snprint(a, sizeof(a), address);
+             t = avahi_string_list_to_string(txt);
+@@ -123,9 +120,8 @@ static void browse_callback(
+     switch (event) {
+ 
+         case AVAHI_BROWSER_FAILURE:
+-        case AVAHI_BROWSER_NOT_FOUND:
+             
+-            fprintf(stderr, "(Browser) %s\n", event == AVAHI_BROWSER_FAILURE ? "FAILURE" : "NOT_FOUND");
++            fprintf(stderr, "(Browser) %s\n", avahi_strerror(avahi_server_errno(server)));
+             avahi_simple_poll_quit(simple_poll);
+             return;
+ 
+
+commit 0c54764cf19428a0c52724a75ddf3368e3899209
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Mon Oct 17 02:07:26 2005 +0000
+
+    * split client.h into client.h, lookup.h and publish.h just like we did on the server side
+    * Wrap avahi_server_update_txt() as DBUS function UpdateServiceTxt
+    * Add client side API avahi_entry_group_update_service_txt() and friends
+    * handle AVAHI_PUBLISH_UPDATE semantics in DBUS protocol
+    * minor cleanups
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@791 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index 7a6940b..7918cad 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -29,6 +29,8 @@
+ #include <time.h>
+ 
+ #include <avahi-client/client.h>
++#include <avahi-client/lookup.h>
++
+ #include <avahi-common/simple-watch.h>
+ #include <avahi-common/malloc.h>
+ #include <avahi-common/error.h>
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index efc1f2b..e9dcffc 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -29,6 +29,8 @@
+ #include <assert.h>
+ 
+ #include <avahi-client/client.h>
++#include <avahi-client/publish.h>
++
+ #include <avahi-common/alternative.h>
+ #include <avahi-common/simple-watch.h>
+ #include <avahi-common/malloc.h>
+
+commit 3adbda2cd5be48b7c630325f0f92e315d7eb2cfb
+Author: Trent Lloyd <lathiat@bur.st>
+Date:   Mon Oct 17 20:07:43 2005 +0000
+
+     * Add custom user-specific configure flags to bootstrap.sh
+     * Add new constant AVAHI_ADDRESS_STR_MAX for use with
+    avahi_address_snprint arr
+    ays
+     * Update all our code to use AVAHI_ADDRESS_STR_MAX
+     * Add avahi_client_add_address to avahi-client
+     * Add avahi_client_add_address test to avahi-client
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@800 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index 7918cad..3bbed11 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -62,7 +62,7 @@ static void resolve_callback(
+             break;
+ 
+         case AVAHI_RESOLVER_FOUND: {
+-            char a[128], *t;
++            char a[AVAHI_ADDRESS_STR_MAX], *t;
+             
+             fprintf(stderr, "Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
+             
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index 5de47b3..57fafe4 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -73,7 +73,7 @@ static void resolve_callback(
+             break;
+ 
+         case AVAHI_RESOLVER_FOUND: {
+-            char a[128], *t;
++            char a[AVAHI_ADDRESS_STR_MAX], *t;
+             
+             fprintf(stderr, "(Resolver) Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
+             
+
+commit 6b391bb81f0dce0193a722254016b26c12a17643
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Tue Oct 18 19:52:03 2005 +0000
+
+    * remove AVAHI_PUBLISH_IS_PROXY, it was a bad idea
+    * drop avahi_service_is_service_local(), avahi_client_is_service_local()
+    * add new lookup result flags AVAHI_LOOKUP_RESULT_OUR_OWN and AVAHI_LOOKUP_RESULT_LOCAL
+    * remove avahi_address_resolver_new() and replace it by avahi_address_resolver_new_a()
+    * avahi-client: save query data in browse/resolve objects so that we can return it on failure
+    * other cleanups
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@811 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index 3bbed11..5ebbf2d 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -73,13 +73,15 @@ static void resolve_callback(
+                     "\tTXT=%s\n"
+                     "\tcookie is %u\n"
+                     "\tis_local: %i\n"
++                    "\tour_own: %i\n"
+                     "\twide_area: %i\n"
+                     "\tmulticast: %i\n"
+                     "\tcached: %i\n",
+                     host_name, port, a,
+                     t,
+                     avahi_string_list_get_service_cookie(txt),
+-                    avahi_client_is_service_local(avahi_service_resolver_get_client(r), interface, protocol, name, type, domain),
++                    !!(flags & AVAHI_LOOKUP_RESULT_LOCAL),
++                    !!(flags & AVAHI_LOOKUP_RESULT_OUR_OWN),
+                     !!(flags & AVAHI_LOOKUP_RESULT_WIDE_AREA),
+                     !!(flags & AVAHI_LOOKUP_RESULT_MULTICAST),
+                     !!(flags & AVAHI_LOOKUP_RESULT_CACHED));
+@@ -176,11 +178,9 @@ int main(int argc, char*argv[]) {
+         fprintf(stderr, "Failed to create service browser: %s\n", avahi_strerror(avahi_client_errno(client)));
+         goto fail;
+     }
+-    
++
+     /* Run the main loop */
+-    for (;;)
+-        if (avahi_simple_poll_iterate(simple_poll, -1) != 0)
+-            break;
++    avahi_simple_poll_loop(simple_poll);
+     
+     ret = 0;
+     
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index e9dcffc..bb895ce 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -72,15 +72,14 @@ static void create_services(AvahiClient *c) {
+     assert(c);
+ 
+     /* If this is the first time we're called, let's create a new entry group */
+-    if (!group) {
++    if (!group)
+         if (!(group = avahi_entry_group_new(c, entry_group_callback, NULL))) {
+             fprintf(stderr, "avahi_entry_group_new() failed: %s\n", avahi_strerror(avahi_client_errno(c)));
+             goto fail;
+         }
+-    }
+     
+     fprintf(stderr, "Adding service '%s'\n", name);
+-
++    
+     /* Create some random TXT data */
+     snprintf(r, sizeof(r), "random=%i", rand());
+ 
+@@ -120,12 +119,15 @@ static void client_callback(AvahiClient *c, AvahiClientState state, void * userd
+ 
+     /* Called whenever the client or server state changes */
+ 
+-    if (state == AVAHI_CLIENT_S_RUNNING)
+-        /* The serve has startup successfully and registered its host
++    if (state == AVAHI_CLIENT_S_RUNNING) {
++        
++        /* The server has startup successfully and registered its host
+          * name on the network, so it's time to create our services */
+-        create_services(c);
++        if (group)
++            create_services(c);
+     
+-    else if (state == AVAHI_CLIENT_S_COLLISION) {
++    } else if (state == AVAHI_CLIENT_S_COLLISION) {
++        
+         /* Let's drop our registered services. When the server is back
+          * in AVAHI_SERVER_RUNNING state we will register them
+          * again with the new host name. */
+@@ -160,19 +162,15 @@ int main(int argc, char*argv[]) {
+         fprintf(stderr, "Failed to create client: %s\n", avahi_strerror(error));
+         goto fail;
+     }
+-    
++
+     /* Run the main loop */
+-    for (;;)
+-        if (avahi_simple_poll_iterate(simple_poll, -1) != 0)
+-            break;
++    avahi_simple_poll_loop(simple_poll);
+     
+     ret = 0;
+     
+ fail:
+     
+     /* Cleanup things */
+-    if (group)
+-        avahi_entry_group_free(group);
+ 
+     if (client)
+         avahi_client_free(client);
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index 57fafe4..db2dcb9 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -90,7 +90,7 @@ static void resolve_callback(
+                     host_name, port, a,
+                     t,
+                     avahi_string_list_get_service_cookie(txt),
+-                    avahi_server_is_service_local(server, interface, protocol, name, type, domain),
++                    !!(flags & AVAHI_LOOKUP_RESULT_LOCAL),
+                     !!(flags & AVAHI_LOOKUP_RESULT_WIDE_AREA),
+                     !!(flags & AVAHI_LOOKUP_RESULT_MULTICAST),
+                     !!(flags & AVAHI_LOOKUP_RESULT_CACHED));
+@@ -195,9 +195,7 @@ int main(int argc, char*argv[]) {
+     }
+     
+     /* Run the main loop */
+-    for (;;)
+-        if (avahi_simple_poll_iterate(simple_poll, -1) != 0)
+-            break;
++    avahi_simple_poll_loop(simple_poll);
+     
+     ret = 0;
+     
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index f826a5f..0d8c04c 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -72,12 +72,11 @@ static void create_services(AvahiServer *s) {
+     assert(s);
+ 
+     /* If this is the first time we're called, let's create a new entry group */
+-    if (!group) {
++    if (!group)
+         if (!(group = avahi_s_entry_group_new(s, entry_group_callback, NULL))) {
+             fprintf(stderr, "avahi_entry_group_new() failed: %s\n", avahi_strerror(avahi_server_errno(s)));
+             goto fail;
+         }
+-    }
+     
+     fprintf(stderr, "Adding service '%s'\n", name);
+ 
+@@ -120,12 +119,14 @@ static void server_callback(AvahiServer *s, AvahiServerState state, void * userd
+ 
+     /* Called whenever the server state changes */
+ 
+-    if (state == AVAHI_SERVER_RUNNING)
++    if (state == AVAHI_SERVER_RUNNING) {
+         /* The serve has startup successfully and registered its host
+          * name on the network, so it's time to create our services */
+-        create_services(s);
++
++        if (group)
++            create_services(s);
+     
+-    else if (state == AVAHI_SERVER_COLLISION) {
++    } else if (state == AVAHI_SERVER_COLLISION) {
+         char *n;
+         int r;
+         
+@@ -183,19 +184,15 @@ int main(int argc, char*argv[]) {
+         fprintf(stderr, "Failed to create server: %s\n", avahi_strerror(error));
+         goto fail;
+     }
+-    
++
+     /* Run the main loop */
+-    for (;;)
+-        if (avahi_simple_poll_iterate(simple_poll, -1) != 0)
+-            break;
++    avahi_simple_poll_loop(simple_poll);
+     
+     ret = 0;
+     
+ fail:
+     
+     /* Cleanup things */
+-    if (group)
+-        avahi_s_entry_group_free(group);
+ 
+     if (server)
+         avahi_server_free(server);
+
+commit 2be556032ed87b7627a135174339c5e5a0e8fc44
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Tue Oct 18 20:04:08 2005 +0000
+
+    add config.h inclusion to glib integration example
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@814 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/glib-integration.c b/examples/glib-integration.c
+index fa68693..8957128 100644
+--- a/examples/glib-integration.c
++++ b/examples/glib-integration.c
+@@ -19,6 +19,10 @@
+   USA.
+ ***/
+ 
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
+ #include <glib.h>
+ 
+ #include <avahi-client/client.h>
+
+commit 16d9e30dd7fa052bd7e6dd37927d7f27bec90ef1
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Wed Oct 19 00:10:02 2005 +0000
+
+    * Compile tests only when --enable-tests was specified on the configure command line
+    * Build compat layers only when --enable-compat-{howl,libdns_sd} was passed to configure
+    * drop avahi_strlcpy() to reduce our code/API size
+    * replace getifname() with if_indextoname in avahi-dnsconfd
+    * declare environ if needed in avahi-dnsconfd
+    * drop some useless definitions like  AVAHI_PUBLISH_NULL = 0
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@819 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/Makefile.am b/examples/Makefile.am
+index 2a3d48e..92cdccd 100644
+--- a/examples/Makefile.am
++++ b/examples/Makefile.am
+@@ -19,9 +19,11 @@
+ 
+ AM_CFLAGS=-I$(top_srcdir)
+ 
++if ENABLE_TESTS
+ noinst_PROGRAMS = \
+ 	core-publish-service \
+ 	core-browse-services
++endif
+ 
+ core_publish_service_SOURCES = core-publish-service.c
+ core_publish_service_CFLAGS = $(AM_CFLAGS)
+@@ -33,10 +35,13 @@ core_browse_services_LDADD = $(AM_LDADD) ../avahi-core/libavahi-core.la ../avahi
+ 
+ 
+ if HAVE_DBUS
++if ENABLE_TESTS
+ 
+ noinst_PROGRAMS += \
+ 	client-publish-service \
+ 	client-browse-services
++endif
++
+ client_publish_service_SOURCES = client-publish-service.c
+ client_publish_service_CFLAGS = $(AM_CFLAGS)
+ client_publish_service_LDADD = $(AM_LDADD) ../avahi-client/libavahi-client.la ../avahi-common/libavahi-common.la
+@@ -47,8 +52,11 @@ client_browse_services_LDADD = $(AM_LDADD) ../avahi-client/libavahi-client.la ..
+ 
+ if HAVE_GLIB
+ 
++if ENABLE_TESTS
+ noinst_PROGRAMS += \
+ 	glib-integration
++endif
++
+ glib_integration_SOURCES = glib-integration.c
+ glib_integration_CFLAGS = $(AM_CFLAGS) $(GLIB20_CFLAGS)
+ glib_integration_LDADD = $(AM_LDADD) $(GLIB20_LIBS) ../avahi-client/libavahi-client.la ../avahi-common/libavahi-common.la ../avahi-glib/libavahi-glib.la
+
+commit f17d2832301b0f2fcd50fdcc6fec77666178158f
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Mon Oct 24 22:41:39 2005 +0000
+
+    * add new entry group state AVAHI_ENTRY_GROUP_FAILURE
+    * pass error code alongside entry gorup state changes over DBUS
+    * add new server state AVAHI_SERVER_FAILURE
+    * pass error code alongside server state changes over DBUS
+    * fix client-publish-service
+    * rename error code AVAHI_ERR_LOCAL_COLLISION to AVAHI_ERR_COLLISION
+    * update TODO
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@854 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index bb895ce..d99c46b 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -47,22 +47,36 @@ static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state,
+ 
+     /* Called whenever the entry group state changes */
+ 
+-    if (state == AVAHI_ENTRY_GROUP_ESTABLISHED)
+-        /* The entry group has been established successfully */
+-        fprintf(stderr, "Service '%s' successfully established.\n", name);
+-    
+-    else if (state == AVAHI_ENTRY_GROUP_COLLISION) {
+-        char *n;
++    switch (state) {
++        case AVAHI_ENTRY_GROUP_ESTABLISHED :
++            /* The entry group has been established successfully */
++            fprintf(stderr, "Service '%s' successfully established.\n", name);
++            break;
++
++        case AVAHI_ENTRY_GROUP_COLLISION : {
++            char *n;
++            
++            /* A service name collision happened. Let's pick a new name */
++            n = avahi_alternative_service_name(name);
++            avahi_free(name);
++            name = n;
++            
++            fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
++            
++            /* And recreate the services */
++            create_services(avahi_entry_group_get_client(g));
++            break;
++        }
+ 
+-        /* A service name collision happened. Let's pick a new name */
+-        n = avahi_alternative_service_name(name);
+-        avahi_free(name);
+-        name = n;
++        case AVAHI_ENTRY_GROUP_FAILURE :
+ 
+-        fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
++            /* Some kind of failure happened while we were registering our services */
++            avahi_simple_poll_quit(simple_poll);
++            break;
+ 
+-        /* And recreate the services */
+-        create_services(avahi_entry_group_get_client(g));
++        case AVAHI_ENTRY_GROUP_UNCOMMITED:
++        case AVAHI_ENTRY_GROUP_REGISTERING:
++            ;
+     }
+ }
+ 
+@@ -111,7 +125,6 @@ static void create_services(AvahiClient *c) {
+ 
+ fail:
+     avahi_simple_poll_quit(simple_poll);
+-    return;
+ }
+ 
+ static void client_callback(AvahiClient *c, AvahiClientState state, void * userdata) {
+@@ -119,25 +132,35 @@ static void client_callback(AvahiClient *c, AvahiClientState state, void * userd
+ 
+     /* Called whenever the client or server state changes */
+ 
+-    if (state == AVAHI_CLIENT_S_RUNNING) {
++    switch (state) {
++        case AVAHI_CLIENT_S_RUNNING:
+         
+-        /* The server has startup successfully and registered its host
+-         * name on the network, so it's time to create our services */
+-        if (group)
+-            create_services(c);
+-    
+-    } else if (state == AVAHI_CLIENT_S_COLLISION) {
+-        
+-        /* Let's drop our registered services. When the server is back
+-         * in AVAHI_SERVER_RUNNING state we will register them
+-         * again with the new host name. */
+-        if (group)
+-            avahi_entry_group_reset(group);
+-        
+-    } else if (state == AVAHI_CLIENT_DISCONNECTED) {
++            /* The server has startup successfully and registered its host
++             * name on the network, so it's time to create our services */
++            if (!group)
++                create_services(c);
++            break;
+ 
+-        fprintf(stderr, "Server connection terminated.\n");
+-        avahi_simple_poll_quit(simple_poll);
++        case AVAHI_CLIENT_S_COLLISION:
++        
++            /* Let's drop our registered services. When the server is back
++             * in AVAHI_SERVER_RUNNING state we will register them
++             * again with the new host name. */
++            if (group)
++                avahi_entry_group_reset(group);
++            break;
++            
++        case AVAHI_CLIENT_DISCONNECTED:
++
++            fprintf(stderr, "Server connection terminated.\n");
++            avahi_simple_poll_quit(simple_poll);
++
++            break;
++
++        case AVAHI_CLIENT_S_FAILURE:
++        case AVAHI_CLIENT_S_INVALID:
++        case AVAHI_CLIENT_S_REGISTERING:
++            ;
+     }
+ }
+ 
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index 0d8c04c..dc5170b 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -47,22 +47,38 @@ static void entry_group_callback(AvahiServer *s, AvahiSEntryGroup *g, AvahiEntry
+ 
+     /* Called whenever the entry group state changes */
+ 
+-    if (state == AVAHI_ENTRY_GROUP_ESTABLISHED)
+-        /* The entry group has been established successfully */
+-        fprintf(stderr, "Service '%s' successfully established.\n", name);
+-    
+-    else if (state == AVAHI_ENTRY_GROUP_COLLISION) {
+-        char *n;
+-
+-        /* A service name collision happened. Let's pick a new name */
+-        n = avahi_alternative_service_name(name);
+-        avahi_free(name);
+-        name = n;
++    switch (state) {
++        
++        case AVAHI_ENTRY_GROUP_ESTABLISHED:
++
++            /* The entry group has been established successfully */
++            fprintf(stderr, "Service '%s' successfully established.\n", name);
++            break;
++
++        case AVAHI_ENTRY_GROUP_COLLISION: {
++            char *n;
++            
++            /* A service name collision happened. Let's pick a new name */
++            n = avahi_alternative_service_name(name);
++            avahi_free(name);
++            name = n;
++            
++            fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
++            
++            /* And recreate the services */
++            create_services(s);
++            break;
++        }
++            
++        case AVAHI_ENTRY_GROUP_FAILURE :
+ 
+-        fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
++            /* Some kind of failure happened while we were registering our services */
++            avahi_simple_poll_quit(simple_poll);
++            break;
+ 
+-        /* And recreate the services */
+-        create_services(s);
++        case AVAHI_ENTRY_GROUP_UNCOMMITED:
++        case AVAHI_ENTRY_GROUP_REGISTERING:
++            ;
+     }
+ }
+ 
+@@ -111,7 +127,6 @@ static void create_services(AvahiServer *s) {
+ 
+ fail:
+     avahi_simple_poll_quit(simple_poll);
+-    return;
+ }
+ 
+ static void server_callback(AvahiServer *s, AvahiServerState state, void * userdata) {
+@@ -119,35 +134,54 @@ static void server_callback(AvahiServer *s, AvahiServerState state, void * userd
+ 
+     /* Called whenever the server state changes */
+ 
+-    if (state == AVAHI_SERVER_RUNNING) {
+-        /* The serve has startup successfully and registered its host
+-         * name on the network, so it's time to create our services */
+-
+-        if (group)
+-            create_services(s);
+-    
+-    } else if (state == AVAHI_SERVER_COLLISION) {
+-        char *n;
+-        int r;
+-        
+-        /* A host name collision happened. Let's pick a new name for the server */
+-        n = avahi_alternative_host_name(avahi_server_get_host_name(s));
+-        fprintf(stderr, "Host name collision, retrying with '%s'\n", n);
+-        r = avahi_server_set_host_name(s, n);
+-        avahi_free(n);
+-
+-        if (r < 0) {
+-            fprintf(stderr, "Failed to set new host name: %s\n", avahi_strerror(r));
++    switch (state) {
++
++        case AVAHI_SERVER_RUNNING:
++            /* The serve has startup successfully and registered its host
++             * name on the network, so it's time to create our services */
++            
++            if (group)
++                create_services(s);
++
++            break;
++
++        case AVAHI_SERVER_COLLISION: {
++            char *n;
++            int r;
++            
++            /* A host name collision happened. Let's pick a new name for the server */
++            n = avahi_alternative_host_name(avahi_server_get_host_name(s));
++            fprintf(stderr, "Host name collision, retrying with '%s'\n", n);
++            r = avahi_server_set_host_name(s, n);
++            avahi_free(n);
++            
++            if (r < 0) {
++                fprintf(stderr, "Failed to set new host name: %s\n", avahi_strerror(r));
++                
++                avahi_simple_poll_quit(simple_poll);
++                return;
++            }
++
++            /* Let's drop our registered services. When the server is back
++             * in AVAHI_SERVER_RUNNING state we will register them
++             * again with the new host name. */
++            if (group)
++                avahi_s_entry_group_reset(group);
++
++            break;
++        }
+ 
++        case AVAHI_SERVER_FAILURE:
++            
++            /* Terminate on failure */
++            
++            fprintf(stderr, "Server failure: %s\n", avahi_strerror(avahi_server_errno(s)));
+             avahi_simple_poll_quit(simple_poll);
+-            return;
+-        }
++            break;
+ 
+-        /* Let's drop our registered services. When the server is back
+-         * in AVAHI_SERVER_RUNNING state we will register them
+-         * again with the new host name. */
+-        if (group)
+-            avahi_s_entry_group_reset(group);
++        case AVAHI_SERVER_INVALID:
++        case AVAHI_SERVER_REGISTERING:
++            ;
+     }
+ }
+ 
+
+commit 452477526258b14974d4d8b9ddcba830336cc9fe
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Mon Oct 24 23:08:26 2005 +0000
+
+    fix core-publish-service.c
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@856 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index dc5170b..f5cadea 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -140,7 +140,7 @@ static void server_callback(AvahiServer *s, AvahiServerState state, void * userd
+             /* The serve has startup successfully and registered its host
+              * name on the network, so it's time to create our services */
+             
+-            if (group)
++            if (!group)
+                 create_services(s);
+ 
+             break;
+
+commit 854f901f491ccda79aee11edc3d59109cb229d28
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Wed Oct 26 21:27:40 2005 +0000
+
+    * avahi-utils: replace python avahi-browse with a version written in C.
+    * remove -Wunused from GCC command line and use "unused" attribute instead
+    * remove AVAHI_CLIENT_S_FAILURE and AVAHI_CLIENT_S_INVALID since these event's are never forwarded to the client anyway
+    * make use of AVAHI_GCC_NORETURN
+    * really send eror code with StateChange DBUS signals
+    * ignore EINTR in avahi_simple_poll_loop()
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@879 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/Makefile.am b/examples/Makefile.am
+index 92cdccd..e6e66f5 100644
+--- a/examples/Makefile.am
++++ b/examples/Makefile.am
+@@ -33,7 +33,6 @@ core_browse_services_SOURCES = core-browse-services.c
+ core_browse_services_CFLAGS = $(AM_CFLAGS)
+ core_browse_services_LDADD = $(AM_LDADD) ../avahi-core/libavahi-core.la ../avahi-common/libavahi-common.la
+ 
+-
+ if HAVE_DBUS
+ if ENABLE_TESTS
+ 
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index 5ebbf2d..c5a1cbd 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -39,8 +39,8 @@ static AvahiSimplePoll *simple_poll = NULL;
+ 
+ static void resolve_callback(
+     AvahiServiceResolver *r,
+-    AvahiIfIndex interface,
+-    AvahiProtocol protocol,
++    AVAHI_GCC_UNUSED AvahiIfIndex interface,
++    AVAHI_GCC_UNUSED AvahiProtocol protocol,
+     AvahiResolverEvent event,
+     const char *name,
+     const char *type,
+@@ -50,7 +50,7 @@ static void resolve_callback(
+     uint16_t port,
+     AvahiStringList *txt,
+     AvahiLookupResultFlags flags,
+-    void* userdata) {
++    AVAHI_GCC_UNUSED void* userdata) {
+ 
+     assert(r);
+ 
+@@ -101,7 +101,7 @@ static void browse_callback(
+     const char *name,
+     const char *type,
+     const char *domain,
+-    AvahiLookupResultFlags flags,
++    AVAHI_GCC_UNUSED AvahiLookupResultFlags flags,
+     void* userdata) {
+     
+     AvahiClient *c = userdata;
+@@ -137,11 +137,10 @@ static void browse_callback(
+         case AVAHI_BROWSER_CACHE_EXHAUSTED:
+             fprintf(stderr, "(Browser) %s\n", event == AVAHI_BROWSER_CACHE_EXHAUSTED ? "CACHE_EXHAUSTED" : "ALL_FOR_NOW");
+             break;
+-
+     }
+ }
+ 
+-static void client_callback(AvahiClient *c, AvahiClientState state, void * userdata) {
++static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UNUSED void * userdata) {
+     assert(c);
+ 
+     /* Called whenever the client or server state changes */
+@@ -152,7 +151,7 @@ static void client_callback(AvahiClient *c, AvahiClientState state, void * userd
+     }
+ }
+ 
+-int main(int argc, char*argv[]) {
++int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     AvahiClient *client = NULL;
+     AvahiServiceBrowser *sb = NULL;
+     int error;
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index d99c46b..7013156 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -42,7 +42,7 @@ static char *name = NULL;
+ 
+ static void create_services(AvahiClient *c);
+ 
+-static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state, void *userdata) {
++static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state, AVAHI_GCC_UNUSED void *userdata) {
+     assert(g == group);
+ 
+     /* Called whenever the entry group state changes */
+@@ -127,7 +127,7 @@ fail:
+     avahi_simple_poll_quit(simple_poll);
+ }
+ 
+-static void client_callback(AvahiClient *c, AvahiClientState state, void * userdata) {
++static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UNUSED void * userdata) {
+     assert(c);
+ 
+     /* Called whenever the client or server state changes */
+@@ -157,14 +157,12 @@ static void client_callback(AvahiClient *c, AvahiClientState state, void * userd
+ 
+             break;
+ 
+-        case AVAHI_CLIENT_S_FAILURE:
+-        case AVAHI_CLIENT_S_INVALID:
+         case AVAHI_CLIENT_S_REGISTERING:
+             ;
+     }
+ }
+ 
+-int main(int argc, char*argv[]) {
++int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     AvahiClient *client = NULL;
+     int error;
+     int ret = 1;
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index db2dcb9..a34281e 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -50,8 +50,8 @@ static AvahiServer *server = NULL;
+ 
+ static void resolve_callback(
+     AvahiSServiceResolver *r,
+-    AvahiIfIndex interface,
+-    AvahiProtocol protocol,
++    AVAHI_GCC_UNUSED AvahiIfIndex interface,
++    AVAHI_GCC_UNUSED AvahiProtocol protocol,
+     AvahiResolverEvent event,
+     const char *name,
+     const char *type,
+@@ -61,7 +61,7 @@ static void resolve_callback(
+     uint16_t port,
+     AvahiStringList *txt,
+     AvahiLookupResultFlags flags,
+-    void* userdata) {
++    AVAHI_GCC_UNUSED void* userdata) {
+     
+     assert(r);
+ 
+@@ -109,7 +109,7 @@ static void browse_callback(
+     const char *name,
+     const char *type,
+     const char *domain,
+-    AvahiLookupResultFlags flags,
++    AVAHI_GCC_UNUSED AvahiLookupResultFlags flags,
+     void* userdata) {
+     
+     AvahiServer *s = userdata;
+@@ -149,7 +149,7 @@ static void browse_callback(
+     }
+ }
+ 
+-int main(int argc, char*argv[]) {
++int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     AvahiServerConfig config;
+     AvahiSServiceBrowser *sb = NULL;
+     int error;
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index f5cadea..65dfe5d 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -41,7 +41,7 @@ static char *name = NULL;
+ 
+ static void create_services(AvahiServer *s);
+ 
+-static void entry_group_callback(AvahiServer *s, AvahiSEntryGroup *g, AvahiEntryGroupState state, void *userdata) {
++static void entry_group_callback(AvahiServer *s, AvahiSEntryGroup *g, AvahiEntryGroupState state, AVAHI_GCC_UNUSED void *userdata) {
+     assert(s);
+     assert(g == group);
+ 
+@@ -129,7 +129,7 @@ fail:
+     avahi_simple_poll_quit(simple_poll);
+ }
+ 
+-static void server_callback(AvahiServer *s, AvahiServerState state, void * userdata) {
++static void server_callback(AvahiServer *s, AvahiServerState state, AVAHI_GCC_UNUSED void * userdata) {
+     assert(s);
+ 
+     /* Called whenever the server state changes */
+@@ -185,7 +185,7 @@ static void server_callback(AvahiServer *s, AvahiServerState state, void * userd
+     }
+ }
+ 
+-int main(int argc, char*argv[]) {
++int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     AvahiServerConfig config;
+     AvahiServer *server = NULL;
+     int error;
+diff --git a/examples/glib-integration.c b/examples/glib-integration.c
+index 8957128..bf6eacf 100644
+--- a/examples/glib-integration.c
++++ b/examples/glib-integration.c
+@@ -33,7 +33,7 @@
+ 
+ /* Callback for Avahi API Timeout Event */
+ static void
+-avahi_timeout_event (AvahiTimeout *timeout, void *userdata)
++avahi_timeout_event (AVAHI_GCC_UNUSED AvahiTimeout *timeout, AVAHI_GCC_UNUSED void *userdata)
+ {
+     g_message ("Avahi API Timeout reached!");
+ }
+@@ -54,7 +54,7 @@ avahi_timeout_event_glib (void *userdata)
+ 
+ /* Callback for state changes on the Client */
+ static void
+-avahi_client_callback (AvahiClient *client, AvahiClientState state, void *userdata)
++avahi_client_callback (AVAHI_GCC_UNUSED AvahiClient *client, AvahiClientState state, void *userdata)
+ {
+     GMainLoop *loop = userdata;
+ 
+@@ -71,7 +71,7 @@ avahi_client_callback (AvahiClient *client, AvahiClientState state, void *userda
+ }
+ 
+ int
+-main (int argc, char *argv[])
++main (AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char *argv[])
+ {
+     GMainLoop *loop = NULL;
+     const AvahiPoll *poll_api;
+
+commit 6f37f0e1126ad3776b80dbd64701f38a58738921
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sun Nov 6 15:00:43 2005 +0000
+
+    add new client state AVAHI_CLIENT_FAILURE
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@931 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index 7013156..2f126c1 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -157,6 +157,13 @@ static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UN
+ 
+             break;
+ 
++        case AVAHI_CLIENT_FAILURE:
++            
++            fprintf(stderr, "Client failure: %s\n", avahi_strerror(avahi_client_errno(c)));
++            avahi_simple_poll_quit(simple_poll);
++            
++            break;
++
+         case AVAHI_CLIENT_S_REGISTERING:
+             ;
+     }
+
+commit 4e2113a7d5b702ff070e8220b32662bb00ae02dd
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sun Nov 6 16:12:03 2005 +0000
+
+    * Rename AVAHI_ERR_NOT_CONNECTED to AVAHI_ERR_DISCONNECTED
+    * Remove client state AVAHI_CLIENT_DISCONNECTED and replace it with AVAHI_CLIENT_FAILURE with error code set to AVAHI_ERR_DISCONNECTED
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@935 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index c5a1cbd..00703e6 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -145,8 +145,8 @@ static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UN
+ 
+     /* Called whenever the client or server state changes */
+ 
+-    if (state == AVAHI_CLIENT_DISCONNECTED) {
+-        fprintf(stderr, "Server connection terminated.\n");
++    if (state == AVAHI_CLIENT_FAILURE) {
++        fprintf(stderr, "Server connection failre: %s\n", avahi_strerror(avahi_client_errno(c)));
+         avahi_simple_poll_quit(simple_poll);
+     }
+ }
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index 2f126c1..50a7002 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -150,13 +150,6 @@ static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UN
+                 avahi_entry_group_reset(group);
+             break;
+             
+-        case AVAHI_CLIENT_DISCONNECTED:
+-
+-            fprintf(stderr, "Server connection terminated.\n");
+-            avahi_simple_poll_quit(simple_poll);
+-
+-            break;
+-
+         case AVAHI_CLIENT_FAILURE:
+             
+             fprintf(stderr, "Client failure: %s\n", avahi_strerror(avahi_client_errno(c)));
+diff --git a/examples/glib-integration.c b/examples/glib-integration.c
+index bf6eacf..f1830d8 100644
+--- a/examples/glib-integration.c
++++ b/examples/glib-integration.c
+@@ -60,10 +60,10 @@ avahi_client_callback (AVAHI_GCC_UNUSED AvahiClient *client, AvahiClientState st
+ 
+     g_message ("Avahi Client State Change: %d", state);
+ 
+-    if (state == AVAHI_CLIENT_DISCONNECTED)
++    if (state == AVAHI_CLIENT_FAILURE)
+     {
+         /* We we're disconnected from the Daemon */
+-        g_message ("Disconnected from the Avahi Daemon");
++        g_message ("Disconnected from the Avahi Daemon: %s", avahi_strerror(avahi_client_errno(client)));
+ 
+         /* Quit the application */
+         g_main_loop_quit (loop);
+
+commit 6ecd227ceadc32ed229246aa61df6361c7b58a95
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Tue Nov 8 21:56:28 2005 +0000
+
+    * add new flags parameter to avahi_client_new()
+    * introduce flags AVAHI_CLIENT_NO_FAIL and AVAHI_CLIENT_IGNORE_USER_CONFIG
+    * beef up avahi-browse to show how AVAHI_CLIENT_NO_FAIL may be used: add a new
+      parameter "-f" which tells avahi-browse to stay running when the daemon
+      disconnects from DBUS and reconnect when it reappears. For now dbus-daemon
+      restarts are not handled and result in an AVAHI_CLIENT_FAIL event.
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@937 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index 00703e6..37550ef 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -164,7 +164,7 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     }
+ 
+     /* Allocate a new client */
+-    client = avahi_client_new(avahi_simple_poll_get(simple_poll), client_callback, NULL, &error);
++    client = avahi_client_new(avahi_simple_poll_get(simple_poll), 0, client_callback, NULL, &error);
+ 
+     /* Check wether creating the client object succeeded */
+     if (!client) {
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index 50a7002..a9f9f8c 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -157,6 +157,7 @@ static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UN
+             
+             break;
+ 
++        case AVAHI_CLIENT_CONNECTING:
+         case AVAHI_CLIENT_S_REGISTERING:
+             ;
+     }
+@@ -176,7 +177,7 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     name = avahi_strdup("MegaPrinter");
+ 
+     /* Allocate a new client */
+-    client = avahi_client_new(avahi_simple_poll_get(simple_poll), client_callback, NULL, &error);
++    client = avahi_client_new(avahi_simple_poll_get(simple_poll), 0, client_callback, NULL, &error);
+ 
+     /* Check wether creating the client object succeeded */
+     if (!client) {
+diff --git a/examples/glib-integration.c b/examples/glib-integration.c
+index f1830d8..ab53687 100644
+--- a/examples/glib-integration.c
++++ b/examples/glib-integration.c
+@@ -108,6 +108,7 @@ main (AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char *argv[])
+ 
+     /* Create a new AvahiClient instance */
+     client = avahi_client_new (poll_api,            /* AvahiPoll object from above */
++                               0,
+             avahi_client_callback,                  /* Callback function for Client state changes */
+             loop,                                   /* User data */
+             &error);                                /* Error return */
+
+commit b7e4639b7f117250021a38b018c54e8004bff0d9
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Fri Jan 27 20:34:22 2006 +0000
+
+    update example to include some code to show how to modify an existing service
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@1114 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index a9f9f8c..96afaf3 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -35,6 +35,7 @@
+ #include <avahi-common/simple-watch.h>
+ #include <avahi-common/malloc.h>
+ #include <avahi-common/error.h>
++#include <avahi-common/timeval.h>
+ 
+ static AvahiEntryGroup *group = NULL;
+ static AvahiSimplePoll *simple_poll = NULL;
+@@ -163,10 +164,32 @@ static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UN
+     }
+ }
+ 
++static void modify_callback(AVAHI_GCC_UNUSED AvahiTimeout *e, void *userdata) {
++    AvahiClient *client = userdata;
++
++    fprintf(stderr, "Doing some weird modification\n");
++
++    avahi_free(name); 
++    name = avahi_strdup("Modified MegaPrinter"); 
++
++    /* If the server is currently running, we need to remove our
++     * service and create it anew */
++    if (avahi_client_get_state(client) == AVAHI_CLIENT_S_RUNNING) {
++
++        /* Remove the old services */
++        if (group)
++            avahi_entry_group_reset(group);
++
++        /* And create them again with the new name */
++        create_services(client);
++    }
++}
++
+ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     AvahiClient *client = NULL;
+     int error;
+     int ret = 1;
++    struct timeval tv;
+     
+     /* Allocate main loop object */
+     if (!(simple_poll = avahi_simple_poll_new())) {
+@@ -185,6 +208,13 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+         goto fail;
+     }
+ 
++    /* After 20s do some weird modification to the service */
++    avahi_simple_poll_get(simple_poll)->timeout_new(
++        avahi_simple_poll_get(simple_poll),
++        avahi_elapse_time(&tv, 1000*10, 0),
++        modify_callback,
++        client);
++    
+     /* Run the main loop */
+     avahi_simple_poll_loop(simple_poll);
+     
+
+commit c1e5b725e8e769c8ac1f5df97aac53896b05af43
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Tue Aug 22 01:48:13 2006 +0000
+
+    fix logic of AVAHI_SERVER_REGISTERING state handling. Many clients assumed that
+    this state would follow only on a AVAHI_SERVER_COLLISION state. However, this
+    is not true, hence we need to handle this state transition, too. Mostly the
+    same as we already handle AVAHI_SERVER_COLLISION.
+    
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@1258 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index 96afaf3..66a59de 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -71,6 +71,8 @@ static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state,
+ 
+         case AVAHI_ENTRY_GROUP_FAILURE :
+ 
++            fprintf(stderr, "Entry group failure: %s\n", avahi_strerror(avahi_client_errno(avahi_entry_group_get_client(g))));
++
+             /* Some kind of failure happened while we were registering our services */
+             avahi_simple_poll_quit(simple_poll);
+             break;
+@@ -142,24 +144,32 @@ static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UN
+                 create_services(c);
+             break;
+ 
++        case AVAHI_CLIENT_FAILURE:
++            
++            fprintf(stderr, "Client failure: %s\n", avahi_strerror(avahi_client_errno(c)));
++            avahi_simple_poll_quit(simple_poll);
++            
++            break;
++
+         case AVAHI_CLIENT_S_COLLISION:
+         
+             /* Let's drop our registered services. When the server is back
+              * in AVAHI_SERVER_RUNNING state we will register them
+              * again with the new host name. */
+-            if (group)
+-                avahi_entry_group_reset(group);
+-            break;
+             
+-        case AVAHI_CLIENT_FAILURE:
++        case AVAHI_CLIENT_S_REGISTERING:
++
++            /* The server records are now being established. This
++             * might be caused by a host name change. We need to wait
++             * for our own records to register until the host name is
++             * properly esatblished. */
+             
+-            fprintf(stderr, "Client failure: %s\n", avahi_strerror(avahi_client_errno(c)));
+-            avahi_simple_poll_quit(simple_poll);
++            if (group)
++                avahi_entry_group_reset(group);
+             
+             break;
+ 
+         case AVAHI_CLIENT_CONNECTING:
+-        case AVAHI_CLIENT_S_REGISTERING:
+             ;
+     }
+ }
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index 65dfe5d..6370383 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -72,6 +72,8 @@ static void entry_group_callback(AvahiServer *s, AvahiSEntryGroup *g, AvahiEntry
+             
+         case AVAHI_ENTRY_GROUP_FAILURE :
+ 
++            fprintf(stderr, "Entry group failure: %s\n", avahi_strerror(avahi_server_errno(s)));
++            
+             /* Some kind of failure happened while we were registering our services */
+             avahi_simple_poll_quit(simple_poll);
+             break;
+@@ -162,14 +164,19 @@ static void server_callback(AvahiServer *s, AvahiServerState state, AVAHI_GCC_UN
+                 return;
+             }
+ 
+-            /* Let's drop our registered services. When the server is back
++        }
++
++            /* Fall through */
++
++        case AVAHI_SERVER_REGISTERING:
++            
++	    /* Let's drop our registered services. When the server is back
+              * in AVAHI_SERVER_RUNNING state we will register them
+              * again with the new host name. */
+             if (group)
+                 avahi_s_entry_group_reset(group);
+ 
+             break;
+-        }
+ 
+         case AVAHI_SERVER_FAILURE:
+             
+@@ -180,7 +187,6 @@ static void server_callback(AvahiServer *s, AvahiServerState state, AVAHI_GCC_UN
+             break;
+ 
+         case AVAHI_SERVER_INVALID:
+-        case AVAHI_SERVER_REGISTERING:
+             ;
+     }
+ }
+
+commit 0456242ed7e6ad6bb2afd2f8210e86dfa80ab9d2
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Thu Aug 31 17:26:29 2006 +0000
+
+    fix a few more s/DBUS/D-Bus/
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@1298 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index a34281e..53b18ee 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -5,7 +5,7 @@
+  * the embeddable mDNS stack for embedded applications.
+  *
+  * End user applications should *not* use this API and should use
+- * the DBUS or C APIs, please see
++ * the D-Bus or C APIs, please see
+  * client-browse-services.c and glib-integration.c
+  * 
+  * I repeat, you probably do *not* want to use this example.
+
+commit fb09d84111eaa48462cf49879547f815dd0f08f6
+Author: Trent Lloyd <lathiat@bur.st>
+Date:   Mon Dec 11 22:35:04 2006 +0000
+
+     * Fix specifying priviliged access group (Closes: #85)
+       Thanks to delphinidae
+     * Fix incorrect manual reference (Closes: #83)
+       Thanks to delphinidae
+     * Fix incorrect assert() in client-publish-service.c (Closes: #79)
+       Thanks to tedp
+     * Fix builds on < 2.6.19 (temporary fix, pending possible "better" solution)
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@1337 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index 66a59de..94dcd1e 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -44,7 +44,7 @@ static char *name = NULL;
+ static void create_services(AvahiClient *c);
+ 
+ static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state, AVAHI_GCC_UNUSED void *userdata) {
+-    assert(g == group);
++    assert(g == group || group == NULL);
+ 
+     /* Called whenever the entry group state changes */
+ 
+
+commit 9ef42bdbb826e380e381dff7cbf4a47a687c9407
+Author: Trent Lloyd <lathiat@bur.st>
+Date:   Tue Jan 30 06:38:07 2007 +0000
+
+     * Fix typo of failure, thanks to Michael Burns (Closes #98)
+    
+    
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@1377 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index 37550ef..de6a970 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -146,7 +146,7 @@ static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UN
+     /* Called whenever the client or server state changes */
+ 
+     if (state == AVAHI_CLIENT_FAILURE) {
+-        fprintf(stderr, "Server connection failre: %s\n", avahi_strerror(avahi_client_errno(c)));
++        fprintf(stderr, "Server connection failure: %s\n", avahi_strerror(avahi_client_errno(c)));
+         avahi_simple_poll_quit(simple_poll);
+     }
+ }
+
+commit 1f42fa6815e3de2ca7cd136c7709584c977b3640
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sat Jun 2 10:08:17 2007 +0000
+
+    Make herzi sleep beter. (Closes #143)
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@1483 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index 94dcd1e..db079c1 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -218,7 +218,7 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+         goto fail;
+     }
+ 
+-    /* After 20s do some weird modification to the service */
++    /* After 10s do some weird modification to the service */
+     avahi_simple_poll_get(simple_poll)->timeout_new(
+         avahi_simple_poll_get(simple_poll),
+         avahi_elapse_time(&tv, 1000*10, 0),
+
+commit 328d192ae37f91d3e19c22eb8f97bf830bfc3933
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Sun Dec 16 20:08:26 2007 +0000
+
+    add proper handling for local collisions to example. Clean up the example in some minor other ways. (Closes #178)
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@1582 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index db079c1..536c9f0 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -2,17 +2,17 @@
+ 
+ /***
+   This file is part of avahi.
+- 
++
+   avahi is free software; you can redistribute it and/or modify it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of the
+   License, or (at your option) any later version.
+- 
++
+   avahi is distributed in the hope that it will be useful, but WITHOUT
+   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General
+   Public License for more details.
+- 
++
+   You should have received a copy of the GNU Lesser General Public
+   License along with avahi; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+@@ -45,6 +45,7 @@ static void create_services(AvahiClient *c);
+ 
+ static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state, AVAHI_GCC_UNUSED void *userdata) {
+     assert(g == group || group == NULL);
++    group = g;
+ 
+     /* Called whenever the entry group state changes */
+ 
+@@ -56,14 +57,15 @@ static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state,
+ 
+         case AVAHI_ENTRY_GROUP_COLLISION : {
+             char *n;
+-            
+-            /* A service name collision happened. Let's pick a new name */
++
++            /* A service name collision with a remote service
++             * happened. Let's pick a new name */
+             n = avahi_alternative_service_name(name);
+             avahi_free(name);
+             name = n;
+-            
++
+             fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
+-            
++
+             /* And recreate the services */
+             create_services(avahi_entry_group_get_client(g));
+             break;
+@@ -88,40 +90,63 @@ static void create_services(AvahiClient *c) {
+     int ret;
+     assert(c);
+ 
+-    /* If this is the first time we're called, let's create a new entry group */
++    /* If this is the first time we're called, let's create a new
++     * entry group if necessary */
++
+     if (!group)
+         if (!(group = avahi_entry_group_new(c, entry_group_callback, NULL))) {
+             fprintf(stderr, "avahi_entry_group_new() failed: %s\n", avahi_strerror(avahi_client_errno(c)));
+             goto fail;
+         }
+-    
+-    fprintf(stderr, "Adding service '%s'\n", name);
+-    
+-    /* Create some random TXT data */
+-    snprintf(r, sizeof(r), "random=%i", rand());
+-
+-    /* Add the service for IPP */
+-    if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL)) < 0) {
+-        fprintf(stderr, "Failed to add _ipp._tcp service: %s\n", avahi_strerror(ret));
+-        goto fail;
+-    }
+ 
+-    /* Add the same service for BSD LPR */
+-    if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, NULL, 515, NULL)) < 0) {
+-        fprintf(stderr, "Failed to add _printer._tcp service: %s\n", avahi_strerror(ret));
+-        goto fail;
+-    }
++    /* If the group is empty (either because it was just created, or
++     * because it was reset previously, add our entries.  */
+ 
+-    /* Add an additional (hypothetic) subtype */
+-    if ((ret = avahi_entry_group_add_service_subtype(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, "_magic._sub._printer._tcp") < 0)) {
+-        fprintf(stderr, "Failed to add subtype _magic._sub._printer._tcp: %s\n", avahi_strerror(ret));
+-        goto fail;
+-    }
+-    
+-    /* Tell the server to register the service */
+-    if ((ret = avahi_entry_group_commit(group)) < 0) {
+-        fprintf(stderr, "Failed to commit entry_group: %s\n", avahi_strerror(ret));
+-        goto fail;
++    if (avahi_entry_group_is_empty(group)) {
++        fprintf(stderr, "Adding service '%s'\n", name);
++
++        /* Create some random TXT data */
++        snprintf(r, sizeof(r), "random=%i", rand());
++
++        /* Add the service for IPP */
++        if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL)) < 0) {
++
++            if (ret == AVAHI_ERR_COLLISION) {
++                char *n;
++
++                /* A service name collision with a local service
++                 * happened. Let's pick a new name */
++                n = avahi_alternative_service_name(name);
++                avahi_free(name);
++                name = n;
++
++                fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
++
++                create_services(c);
++                return;
++            }
++
++            fprintf(stderr, "Failed to add _ipp._tcp service: %s\n", avahi_strerror(ret));
++            goto fail;
++        }
++
++        /* Add the same service for BSD LPR */
++        if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, NULL, 515, NULL)) < 0) {
++            fprintf(stderr, "Failed to add _printer._tcp service: %s\n", avahi_strerror(ret));
++            goto fail;
++        }
++
++        /* Add an additional (hypothetic) subtype */
++        if ((ret = avahi_entry_group_add_service_subtype(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, "_magic._sub._printer._tcp") < 0)) {
++            fprintf(stderr, "Failed to add subtype _magic._sub._printer._tcp: %s\n", avahi_strerror(ret));
++            goto fail;
++        }
++
++        /* Tell the server to register the service */
++        if ((ret = avahi_entry_group_commit(group)) < 0) {
++            fprintf(stderr, "Failed to commit entry group: %s\n", avahi_strerror(ret));
++            goto fail;
++        }
+     }
+ 
+     return;
+@@ -137,36 +162,35 @@ static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UN
+ 
+     switch (state) {
+         case AVAHI_CLIENT_S_RUNNING:
+-        
++
+             /* The server has startup successfully and registered its host
+              * name on the network, so it's time to create our services */
+-            if (!group)
+-                create_services(c);
++            create_services(c);
+             break;
+ 
+         case AVAHI_CLIENT_FAILURE:
+-            
++
+             fprintf(stderr, "Client failure: %s\n", avahi_strerror(avahi_client_errno(c)));
+             avahi_simple_poll_quit(simple_poll);
+-            
++
+             break;
+ 
+         case AVAHI_CLIENT_S_COLLISION:
+-        
++
+             /* Let's drop our registered services. When the server is back
+              * in AVAHI_SERVER_RUNNING state we will register them
+              * again with the new host name. */
+-            
++
+         case AVAHI_CLIENT_S_REGISTERING:
+ 
+             /* The server records are now being established. This
+              * might be caused by a host name change. We need to wait
+              * for our own records to register until the host name is
+              * properly esatblished. */
+-            
++
+             if (group)
+                 avahi_entry_group_reset(group);
+-            
++
+             break;
+ 
+         case AVAHI_CLIENT_CONNECTING:
+@@ -179,8 +203,8 @@ static void modify_callback(AVAHI_GCC_UNUSED AvahiTimeout *e, void *userdata) {
+ 
+     fprintf(stderr, "Doing some weird modification\n");
+ 
+-    avahi_free(name); 
+-    name = avahi_strdup("Modified MegaPrinter"); 
++    avahi_free(name);
++    name = avahi_strdup("Modified MegaPrinter");
+ 
+     /* If the server is currently running, we need to remove our
+      * service and create it anew */
+@@ -200,13 +224,13 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     int error;
+     int ret = 1;
+     struct timeval tv;
+-    
++
+     /* Allocate main loop object */
+     if (!(simple_poll = avahi_simple_poll_new())) {
+         fprintf(stderr, "Failed to create simple poll object.\n");
+         goto fail;
+     }
+-    
++
+     name = avahi_strdup("MegaPrinter");
+ 
+     /* Allocate a new client */
+@@ -224,14 +248,14 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+         avahi_elapse_time(&tv, 1000*10, 0),
+         modify_callback,
+         client);
+-    
++
+     /* Run the main loop */
+     avahi_simple_poll_loop(simple_poll);
+-    
++
+     ret = 0;
+-    
++
+ fail:
+-    
++
+     /* Cleanup things */
+ 
+     if (client)
+@@ -241,6 +265,6 @@ fail:
+         avahi_simple_poll_free(simple_poll);
+ 
+     avahi_free(name);
+-    
++
+     return ret;
+ }
+
+commit b898298a5aacb4596646eccbcccdd8afd27e90a5
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Mon Dec 17 10:39:18 2007 +0000
+
+    handle both cases of local collision
+    
+    git-svn-id: file:///home/lennart/svn/public/avahi/trunk@1592 941a03a8-eaeb-0310-b9a0-b1bbd8fe43fe
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index 536c9f0..73ee01b 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -86,7 +86,7 @@ static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state,
+ }
+ 
+ static void create_services(AvahiClient *c) {
+-    char r[128];
++    char *n, r[128];
+     int ret;
+     assert(c);
+ 
+@@ -108,23 +108,16 @@ static void create_services(AvahiClient *c) {
+         /* Create some random TXT data */
+         snprintf(r, sizeof(r), "random=%i", rand());
+ 
++        /* We will now add two services and one subtype to the entry
++         * group. The two services have the same name, but differ in
++         * the service type (IPP vs. BSD LPR). Only services with the
++         * same name should be put in the same entry group. */
++
+         /* Add the service for IPP */
+         if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_ipp._tcp", NULL, NULL, 651, "test=blah", r, NULL)) < 0) {
+ 
+-            if (ret == AVAHI_ERR_COLLISION) {
+-                char *n;
+-
+-                /* A service name collision with a local service
+-                 * happened. Let's pick a new name */
+-                n = avahi_alternative_service_name(name);
+-                avahi_free(name);
+-                name = n;
+-
+-                fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
+-
+-                create_services(c);
+-                return;
+-            }
++            if (ret == AVAHI_ERR_COLLISION)
++                goto collision;
+ 
+             fprintf(stderr, "Failed to add _ipp._tcp service: %s\n", avahi_strerror(ret));
+             goto fail;
+@@ -132,6 +125,10 @@ static void create_services(AvahiClient *c) {
+ 
+         /* Add the same service for BSD LPR */
+         if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, NULL, 515, NULL)) < 0) {
++
++            if (ret == AVAHI_ERR_COLLISION)
++                goto collision;
++
+             fprintf(stderr, "Failed to add _printer._tcp service: %s\n", avahi_strerror(ret));
+             goto fail;
+         }
+@@ -151,6 +148,21 @@ static void create_services(AvahiClient *c) {
+ 
+     return;
+ 
++collision:
++
++    /* A service name collision with a local service happened. Let's
++     * pick a new name */
++    n = avahi_alternative_service_name(name);
++    avahi_free(name);
++    name = n;
++
++    fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
++
++    avahi_entry_group_reset(group);
++
++    create_services(c);
++    return;
++
+ fail:
+     avahi_simple_poll_quit(simple_poll);
+ }
+
+commit e96bb759f1b469c45eceae696d505663183b70b3
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Wed Jun 18 02:25:09 2008 +0200
+
+    add .gitignore files
+
+diff --git a/examples/.gitignore b/examples/.gitignore
+new file mode 100644
+index 0000000..1e1ae08
+--- /dev/null
++++ b/examples/.gitignore
+@@ -0,0 +1,12 @@
++*.o
++*.lo
++*.la
++Makefile
++Makefile.in
++.deps
++.libs
++client-browse-services
++client-publish-service
++core-browse-services
++core-publish-service
++glib-integration
+
+commit a97605e07ad7f44f2f65e15be64880e61a39ab43
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Fri Jun 25 01:08:29 2010 +0200
+
+    from now on we enforce a strict whitespace regime
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index de6a970..b932e0a 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -2,17 +2,17 @@
+ 
+ /***
+   This file is part of avahi.
+- 
++
+   avahi is free software; you can redistribute it and/or modify it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of the
+   License, or (at your option) any later version.
+- 
++
+   avahi is distributed in the hope that it will be useful, but WITHOUT
+   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General
+   Public License for more details.
+- 
++
+   You should have received a copy of the GNU Lesser General Public
+   License along with avahi; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+@@ -63,9 +63,9 @@ static void resolve_callback(
+ 
+         case AVAHI_RESOLVER_FOUND: {
+             char a[AVAHI_ADDRESS_STR_MAX], *t;
+-            
++
+             fprintf(stderr, "Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
+-            
++
+             avahi_address_snprint(a, sizeof(a), address);
+             t = avahi_string_list_to_string(txt);
+             fprintf(stderr,
+@@ -85,7 +85,7 @@ static void resolve_callback(
+                     !!(flags & AVAHI_LOOKUP_RESULT_WIDE_AREA),
+                     !!(flags & AVAHI_LOOKUP_RESULT_MULTICAST),
+                     !!(flags & AVAHI_LOOKUP_RESULT_CACHED));
+-                
++
+             avahi_free(t);
+         }
+     }
+@@ -103,7 +103,7 @@ static void browse_callback(
+     const char *domain,
+     AVAHI_GCC_UNUSED AvahiLookupResultFlags flags,
+     void* userdata) {
+-    
++
+     AvahiClient *c = userdata;
+     assert(b);
+ 
+@@ -111,7 +111,7 @@ static void browse_callback(
+ 
+     switch (event) {
+         case AVAHI_BROWSER_FAILURE:
+-            
++
+             fprintf(stderr, "(Browser) %s\n", avahi_strerror(avahi_client_errno(avahi_service_browser_get_client(b))));
+             avahi_simple_poll_quit(simple_poll);
+             return;
+@@ -126,7 +126,7 @@ static void browse_callback(
+ 
+             if (!(avahi_service_resolver_new(c, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, 0, resolve_callback, c)))
+                 fprintf(stderr, "Failed to resolve service '%s': %s\n", name, avahi_strerror(avahi_client_errno(c)));
+-            
++
+             break;
+ 
+         case AVAHI_BROWSER_REMOVE:
+@@ -171,7 +171,7 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+         fprintf(stderr, "Failed to create client: %s\n", avahi_strerror(error));
+         goto fail;
+     }
+-    
++
+     /* Create the service browser */
+     if (!(sb = avahi_service_browser_new(client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, 0, browse_callback, client))) {
+         fprintf(stderr, "Failed to create service browser: %s\n", avahi_strerror(avahi_client_errno(client)));
+@@ -180,15 +180,15 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+ 
+     /* Run the main loop */
+     avahi_simple_poll_loop(simple_poll);
+-    
++
+     ret = 0;
+-    
++
+ fail:
+-    
++
+     /* Cleanup things */
+     if (sb)
+         avahi_service_browser_free(sb);
+-    
++
+     if (client)
+         avahi_client_free(client);
+ 
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index 53b18ee..65c59fa 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -7,23 +7,23 @@
+  * End user applications should *not* use this API and should use
+  * the D-Bus or C APIs, please see
+  * client-browse-services.c and glib-integration.c
+- * 
++ *
+  * I repeat, you probably do *not* want to use this example.
+  */
+ 
+ /***
+   This file is part of avahi.
+- 
++
+   avahi is free software; you can redistribute it and/or modify it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of the
+   License, or (at your option) any later version.
+- 
++
+   avahi is distributed in the hope that it will be useful, but WITHOUT
+   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General
+   Public License for more details.
+- 
++
+   You should have received a copy of the GNU Lesser General Public
+   License along with avahi; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+@@ -62,7 +62,7 @@ static void resolve_callback(
+     AvahiStringList *txt,
+     AvahiLookupResultFlags flags,
+     AVAHI_GCC_UNUSED void* userdata) {
+-    
++
+     assert(r);
+ 
+     /* Called whenever a service has been resolved successfully or timed out */
+@@ -74,9 +74,9 @@ static void resolve_callback(
+ 
+         case AVAHI_RESOLVER_FOUND: {
+             char a[AVAHI_ADDRESS_STR_MAX], *t;
+-            
++
+             fprintf(stderr, "(Resolver) Service '%s' of type '%s' in domain '%s':\n", name, type, domain);
+-            
++
+             avahi_address_snprint(a, sizeof(a), address);
+             t = avahi_string_list_to_string(txt);
+             fprintf(stderr,
+@@ -97,7 +97,7 @@ static void resolve_callback(
+             avahi_free(t);
+         }
+     }
+-    
++
+     avahi_s_service_resolver_free(r);
+ }
+ 
+@@ -111,7 +111,7 @@ static void browse_callback(
+     const char *domain,
+     AVAHI_GCC_UNUSED AvahiLookupResultFlags flags,
+     void* userdata) {
+-    
++
+     AvahiServer *s = userdata;
+     assert(b);
+ 
+@@ -120,7 +120,7 @@ static void browse_callback(
+     switch (event) {
+ 
+         case AVAHI_BROWSER_FAILURE:
+-            
++
+             fprintf(stderr, "(Browser) %s\n", avahi_strerror(avahi_server_errno(server)));
+             avahi_simple_poll_quit(simple_poll);
+             return;
+@@ -132,10 +132,10 @@ static void browse_callback(
+                function we free it. If the server is terminated before
+                the callback function is called the server will free
+                the resolver for us. */
+-            
++
+             if (!(avahi_s_service_resolver_new(s, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, 0, resolve_callback, s)))
+                 fprintf(stderr, "Failed to resolve service '%s': %s\n", name, avahi_strerror(avahi_server_errno(s)));
+-            
++
+             break;
+ 
+         case AVAHI_BROWSER_REMOVE:
+@@ -175,7 +175,7 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     avahi_address_parse("192.168.50.1", AVAHI_PROTO_UNSPEC, &config.wide_area_servers[0]);
+     config.n_wide_area_servers = 1;
+     config.enable_wide_area = 1;
+-    
++
+     /* Allocate a new server */
+     server = avahi_server_new(avahi_simple_poll_get(simple_poll), &config, NULL, NULL, &error);
+ 
+@@ -187,24 +187,24 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+         fprintf(stderr, "Failed to create server: %s\n", avahi_strerror(error));
+         goto fail;
+     }
+-    
++
+     /* Create the service browser */
+     if (!(sb = avahi_s_service_browser_new(server, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, "_http._tcp", NULL, 0, browse_callback, server))) {
+         fprintf(stderr, "Failed to create service browser: %s\n", avahi_strerror(avahi_server_errno(server)));
+         goto fail;
+     }
+-    
++
+     /* Run the main loop */
+     avahi_simple_poll_loop(simple_poll);
+-    
++
+     ret = 0;
+-    
++
+ fail:
+-    
++
+     /* Cleanup things */
+     if (sb)
+         avahi_s_service_browser_free(sb);
+-    
++
+     if (server)
+         avahi_server_free(server);
+ 
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index 6370383..d7d7395 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -2,17 +2,17 @@
+ 
+ /***
+   This file is part of avahi.
+- 
++
+   avahi is free software; you can redistribute it and/or modify it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of the
+   License, or (at your option) any later version.
+- 
++
+   avahi is distributed in the hope that it will be useful, but WITHOUT
+   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General
+   Public License for more details.
+- 
++
+   You should have received a copy of the GNU Lesser General Public
+   License along with avahi; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+@@ -48,7 +48,7 @@ static void entry_group_callback(AvahiServer *s, AvahiSEntryGroup *g, AvahiEntry
+     /* Called whenever the entry group state changes */
+ 
+     switch (state) {
+-        
++
+         case AVAHI_ENTRY_GROUP_ESTABLISHED:
+ 
+             /* The entry group has been established successfully */
+@@ -57,23 +57,23 @@ static void entry_group_callback(AvahiServer *s, AvahiSEntryGroup *g, AvahiEntry
+ 
+         case AVAHI_ENTRY_GROUP_COLLISION: {
+             char *n;
+-            
++
+             /* A service name collision happened. Let's pick a new name */
+             n = avahi_alternative_service_name(name);
+             avahi_free(name);
+             name = n;
+-            
++
+             fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
+-            
++
+             /* And recreate the services */
+             create_services(s);
+             break;
+         }
+-            
++
+         case AVAHI_ENTRY_GROUP_FAILURE :
+ 
+             fprintf(stderr, "Entry group failure: %s\n", avahi_strerror(avahi_server_errno(s)));
+-            
++
+             /* Some kind of failure happened while we were registering our services */
+             avahi_simple_poll_quit(simple_poll);
+             break;
+@@ -95,7 +95,7 @@ static void create_services(AvahiServer *s) {
+             fprintf(stderr, "avahi_entry_group_new() failed: %s\n", avahi_strerror(avahi_server_errno(s)));
+             goto fail;
+         }
+-    
++
+     fprintf(stderr, "Adding service '%s'\n", name);
+ 
+     /* Create some random TXT data */
+@@ -141,7 +141,7 @@ static void server_callback(AvahiServer *s, AvahiServerState state, AVAHI_GCC_UN
+         case AVAHI_SERVER_RUNNING:
+             /* The serve has startup successfully and registered its host
+              * name on the network, so it's time to create our services */
+-            
++
+             if (!group)
+                 create_services(s);
+ 
+@@ -150,16 +150,16 @@ static void server_callback(AvahiServer *s, AvahiServerState state, AVAHI_GCC_UN
+         case AVAHI_SERVER_COLLISION: {
+             char *n;
+             int r;
+-            
++
+             /* A host name collision happened. Let's pick a new name for the server */
+             n = avahi_alternative_host_name(avahi_server_get_host_name(s));
+             fprintf(stderr, "Host name collision, retrying with '%s'\n", n);
+             r = avahi_server_set_host_name(s, n);
+             avahi_free(n);
+-            
++
+             if (r < 0) {
+                 fprintf(stderr, "Failed to set new host name: %s\n", avahi_strerror(r));
+-                
++
+                 avahi_simple_poll_quit(simple_poll);
+                 return;
+             }
+@@ -169,7 +169,7 @@ static void server_callback(AvahiServer *s, AvahiServerState state, AVAHI_GCC_UN
+             /* Fall through */
+ 
+         case AVAHI_SERVER_REGISTERING:
+-            
++
+ 	    /* Let's drop our registered services. When the server is back
+              * in AVAHI_SERVER_RUNNING state we will register them
+              * again with the new host name. */
+@@ -179,9 +179,9 @@ static void server_callback(AvahiServer *s, AvahiServerState state, AVAHI_GCC_UN
+             break;
+ 
+         case AVAHI_SERVER_FAILURE:
+-            
++
+             /* Terminate on failure */
+-            
++
+             fprintf(stderr, "Server failure: %s\n", avahi_strerror(avahi_server_errno(s)));
+             avahi_simple_poll_quit(simple_poll);
+             break;
+@@ -196,7 +196,7 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     AvahiServer *server = NULL;
+     int error;
+     int ret = 1;
+-    
++
+     /* Initialize the pseudo-RNG */
+     srand(time(NULL));
+ 
+@@ -205,14 +205,14 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+         fprintf(stderr, "Failed to create simple poll object.\n");
+         goto fail;
+     }
+-    
++
+     name = avahi_strdup("MegaPrinter");
+ 
+     /* Let's set the host name for this server. */
+     avahi_server_config_init(&config);
+     config.host_name = avahi_strdup("gurkiman");
+     config.publish_workstation = 0;
+-    
++
+     /* Allocate a new server */
+     server = avahi_server_new(avahi_simple_poll_get(simple_poll), &config, server_callback, NULL, &error);
+ 
+@@ -227,11 +227,11 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+ 
+     /* Run the main loop */
+     avahi_simple_poll_loop(simple_poll);
+-    
++
+     ret = 0;
+-    
++
+ fail:
+-    
++
+     /* Cleanup things */
+ 
+     if (server)
+@@ -241,6 +241,6 @@ fail:
+         avahi_simple_poll_free(simple_poll);
+ 
+     avahi_free(name);
+-    
++
+     return ret;
+ }
+diff --git a/examples/glib-integration.c b/examples/glib-integration.c
+index ab53687..4213d74 100644
+--- a/examples/glib-integration.c
++++ b/examples/glib-integration.c
+@@ -2,17 +2,17 @@
+ 
+ /***
+   This file is part of avahi.
+- 
++
+   avahi is free software; you can redistribute it and/or modify it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of the
+   License, or (at your option) any later version.
+- 
++
+   avahi is distributed in the hope that it will be useful, but WITHOUT
+   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+   or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General
+   Public License for more details.
+- 
++
+   You should have received a copy of the GNU Lesser General Public
+   License along with avahi; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+@@ -45,7 +45,7 @@ avahi_timeout_event_glib (void *userdata)
+     GMainLoop *loop = userdata;
+ 
+     g_message ("GLIB API Timeout reached, quitting main loop!");
+-    
++
+     /* Quit the application */
+     g_main_loop_quit (loop);
+ 
+@@ -121,7 +121,7 @@ main (AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char *argv[])
+ 
+         goto fail;
+     }
+-   
++
+     /* Make a call to get the version string from the daemon */
+     version = avahi_client_get_version_string (client);
+ 
+@@ -132,7 +132,7 @@ main (AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char *argv[])
+ 
+         goto fail;
+     }
+-        
++
+     g_message ("Avahi Server Version: %s", version);
+ 
+     /* Start the GLIB Main Loop */
+
+commit 908e491f7d55209acfbb2595ab1ef5b24502d641
+Author: Lennart Poettering <lennart@poettering.net>
+Date:   Fri Jun 25 03:10:32 2010 +0200
+
+    get rid of a lot of old svn cruft
+
+diff --git a/examples/Makefile.am b/examples/Makefile.am
+index e6e66f5..dbb7f00 100644
+--- a/examples/Makefile.am
++++ b/examples/Makefile.am
+@@ -1,7 +1,5 @@
+-# $Id$
+-#
+ # This file is part of avahi.
+-# 
++#
+ # avahi is free software; you can redistribute it and/or modify it
+ # under the terms of the GNU Lesser General Public License as
+ # published by the Free Software Foundation; either version 2 of the
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index b932e0a..f7ded2a 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -1,5 +1,3 @@
+-/* $Id$ */
+-
+ /***
+   This file is part of avahi.
+ 
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index 73ee01b..facc965 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -1,5 +1,3 @@
+-/* $Id$ */
+-
+ /***
+   This file is part of avahi.
+ 
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index 65c59fa..e062e3e 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -1,5 +1,3 @@
+-/* $Id$ */
+-
+ /* PLEASE NOTE *
+  * This file demonstrates how to use Avahi's core API, this is
+  * the embeddable mDNS stack for embedded applications.
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index d7d7395..a78a464 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -1,5 +1,3 @@
+-/* $Id$ */
+-
+ /***
+   This file is part of avahi.
+ 
+diff --git a/examples/glib-integration.c b/examples/glib-integration.c
+index 4213d74..d2a2457 100644
+--- a/examples/glib-integration.c
++++ b/examples/glib-integration.c
+@@ -1,5 +1,3 @@
+-/* $Id$ */
+-
+ /***
+   This file is part of avahi.
+ 
+
+commit d4db63f3a1cfe994c7431dc2b398a9f0c922831d
+Author: lilinjie <lilinjie@uniontech.com>
+Date:   Wed Jan 11 17:31:51 2023 +0800
+
+    fix typo
+    
+    Signed-off-by: lilinjie <lilinjie@uniontech.com>
+
+diff --git a/examples/client-browse-services.c b/examples/client-browse-services.c
+index f7ded2a..38ef0a1 100644
+--- a/examples/client-browse-services.c
++++ b/examples/client-browse-services.c
+@@ -164,7 +164,7 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     /* Allocate a new client */
+     client = avahi_client_new(avahi_simple_poll_get(simple_poll), 0, client_callback, NULL, &error);
+ 
+-    /* Check wether creating the client object succeeded */
++    /* Check whether creating the client object succeeded */
+     if (!client) {
+         fprintf(stderr, "Failed to create client: %s\n", avahi_strerror(error));
+         goto fail;
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index facc965..2920d73 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -246,7 +246,7 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     /* Allocate a new client */
+     client = avahi_client_new(avahi_simple_poll_get(simple_poll), 0, client_callback, NULL, &error);
+ 
+-    /* Check wether creating the client object succeeded */
++    /* Check whether creating the client object succeeded */
+     if (!client) {
+         fprintf(stderr, "Failed to create client: %s\n", avahi_strerror(error));
+         goto fail;
+diff --git a/examples/core-browse-services.c b/examples/core-browse-services.c
+index e062e3e..3bac8cc 100644
+--- a/examples/core-browse-services.c
++++ b/examples/core-browse-services.c
+@@ -180,7 +180,7 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     /* Free the configuration data */
+     avahi_server_config_free(&config);
+ 
+-    /* Check wether creating the server object succeeded */
++    /* Check whether creating the server object succeeded */
+     if (!server) {
+         fprintf(stderr, "Failed to create server: %s\n", avahi_strerror(error));
+         goto fail;
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index a78a464..1ae0f73 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -217,7 +217,7 @@ int main(AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char*argv[]) {
+     /* Free the configuration data */
+     avahi_server_config_free(&config);
+ 
+-    /* Check wether creating the server object succeeded */
++    /* Check whether creating the server object succeeded */
+     if (!server) {
+         fprintf(stderr, "Failed to create server: %s\n", avahi_strerror(error));
+         goto fail;
+
+commit 96b660911df4590c510a0653ca07a3e1be677ce8
+Author: Shaun Case <shaunc@aja.com>
+Date:   Tue Apr 16 18:32:28 2019 -0700
+
+    Correct spelling mistakes found by codespell.  Fixes lathiat/avahi #167
+
+diff --git a/examples/glib-integration.c b/examples/glib-integration.c
+index d2a2457..e840298 100644
+--- a/examples/glib-integration.c
++++ b/examples/glib-integration.c
+@@ -123,7 +123,7 @@ main (AVAHI_GCC_UNUSED int argc, AVAHI_GCC_UNUSED char *argv[])
+     /* Make a call to get the version string from the daemon */
+     version = avahi_client_get_version_string (client);
+ 
+-    /* Check if the call suceeded */
++    /* Check if the call succeeded */
+     if (version == NULL)
+     {
+         g_warning ("Error getting version string: %s", avahi_strerror (avahi_client_errno (client)));
+
+commit 8c427833bc93c50f743eac11706724985ed4cdbd
+Author: Jonathan Fether <jfether@users.noreply.github.com>
+Date:   Mon Jul 17 12:23:00 2017 -0700
+
+    examples: fix logic error in server_callback()
+    
+    server_callback() follows logic to handle AVAHI_SERVER_COLLISION and
+    AVAHI_SERVER_REGISTERING states with an unregister of the service group,
+    but does not reset the pointer to the group to NULL. Added a
+    avahi_s_entry_group_free(group) and reset of the pointer to NULL to
+    ensure the re-registration succeeds.
+    
+    Closes #135.
+
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index 1ae0f73..1ccd670 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -168,12 +168,14 @@ static void server_callback(AvahiServer *s, AvahiServerState state, AVAHI_GCC_UN
+ 
+         case AVAHI_SERVER_REGISTERING:
+ 
+-	    /* Let's drop our registered services. When the server is back
++            /* Let's drop our registered services. When the server is back
+              * in AVAHI_SERVER_RUNNING state we will register them
+              * again with the new host name. */
+-            if (group)
++            if (group) {
+                 avahi_s_entry_group_reset(group);
+-
++                avahi_s_entry_group_free(group);
++                group = NULL;
++            }
+             break;
+ 
+         case AVAHI_SERVER_FAILURE:
+
+commit 32fba39e116667bbd9e950b2dd7abd70956b90e8
+Author: Iscle <albertiscle9@gmail.com>
+Date:   Tue Aug 20 03:13:34 2024 +0200
+
+    Fix conditional typo on client-publish-service.c
+    
+    A badly placed closing bracket was assigning a comparison to the ret value, instead of the real returned value. The conditional still worked this way, but the fprintf message would be wrong as the strerror value "ret" would always be 1, and not the real returned value.
+
+diff --git a/examples/client-publish-service.c b/examples/client-publish-service.c
+index 2920d73..e21de57 100644
+--- a/examples/client-publish-service.c
++++ b/examples/client-publish-service.c
+@@ -132,7 +132,7 @@ static void create_services(AvahiClient *c) {
+         }
+ 
+         /* Add an additional (hypothetic) subtype */
+-        if ((ret = avahi_entry_group_add_service_subtype(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, "_magic._sub._printer._tcp") < 0)) {
++        if ((ret = avahi_entry_group_add_service_subtype(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, "_magic._sub._printer._tcp")) < 0) {
+             fprintf(stderr, "Failed to add subtype _magic._sub._printer._tcp: %s\n", avahi_strerror(ret));
+             goto fail;
+         }
+
+commit 8e77303a9aed6888677a2bd234cfde5b11faca37
+Author: Iscle <albertiscle9@gmail.com>
+Date:   Tue Aug 20 13:44:43 2024 +0200
+
+    Fix conditional typo on core-publish-service.c
+    
+    A badly placed closing bracket was assigning a comparison to the ret value, instead of the real returned value. The conditional still worked this way, but the fprintf message would be wrong as the strerror value "ret" would always be 1, and not the real returned value.
+
+diff --git a/examples/core-publish-service.c b/examples/core-publish-service.c
+index 1ccd670..f68dfb9 100644
+--- a/examples/core-publish-service.c
++++ b/examples/core-publish-service.c
+@@ -112,7 +112,7 @@ static void create_services(AvahiServer *s) {
+     }
+ 
+     /* Add an additional (hypothetic) subtype */
+-    if ((ret = avahi_server_add_service_subtype(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, "_magic._sub._printer._tcp") < 0)) {
++    if ((ret = avahi_server_add_service_subtype(s, group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_printer._tcp", NULL, "_magic._sub._printer._tcp")) < 0) {
+         fprintf(stderr, "Failed to add subtype _magic._sub._printer._tcp: %s\n", avahi_strerror(ret));
+         goto fail;
+     }
